@@ -51,7 +51,7 @@ Build time: ~30-40 min on first run (cold cache).
 
 ### Copy ISO to Windows
 ```bash
-cp ~/aether-iso/result/iso/*.iso /mnt/c/Users/nick/workspace/aether-os/
+cp ~/aether-iso/result/iso/*.iso /mnt/c/Users/nick/workspace/sigil/
 ```
 
 ### Flash to USB
@@ -65,7 +65,7 @@ Used **balenaEtcher** on Windows. No pre-formatting needed — Etcher overwrites
 |-------|-----|
 | `broadcom-sta` marked insecure | Added `nixpkgs.config.permittedInsecurePackages = ["broadcom-sta-6.30.223.271-59-6.12.63"]` to `iso.nix` |
 | `networking.networkmanager` conflicts with `networking.wireless` | Removed NetworkManager from `iso.nix` — minimal installer uses wpa_supplicant by default |
-| Git push 403 | Switched remote from HTTPS to SSH (`git remote set-url origin git@github.com:wambozi/aether-os.git`) |
+| Git push 403 | Switched remote from HTTPS to SSH (`git remote set-url origin git@github.com:wambozi/sigil.git`) |
 
 ---
 

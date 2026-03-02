@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/wambozi/aether-os/internal/analyzer"
+	"github.com/wambozi/sigil/internal/analyzer"
 )
 
 // Actuator listens for analyzer summaries and dispatches actions.
@@ -54,7 +54,7 @@ func (a *Actuator) notify(s analyzer.Summary) {
 	// NixOS with a Wayland compositor.  The -a flag sets the app name.
 	cmd := exec.CommandContext(ctx,
 		"notify-send",
-		"-a", "aetherd",
+		"-a", "sigild",
 		"-i", "utilities-system-monitor",
 		summary,
 		body,

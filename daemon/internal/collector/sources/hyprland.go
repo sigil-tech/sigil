@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/aether-os/internal/event"
+	"github.com/wambozi/sigil/internal/event"
 )
 
 // HyprlandSource connects to Hyprland's event socket and streams compositor
