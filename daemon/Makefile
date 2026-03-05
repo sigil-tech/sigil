@@ -1,5 +1,5 @@
 SHELL := bash
-GO    := /usr/local/go/bin/go
+GO    := go
 
 .PHONY: fmt vet test check build
 
