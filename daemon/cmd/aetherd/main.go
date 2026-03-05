@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 	"github.com/wambozi/aether/internal/cactus"
 	"github.com/wambozi/aether/internal/collector"
 	"github.com/wambozi/aether/internal/collector/sources"
+	"github.com/wambozi/aether/internal/event"
 	"github.com/wambozi/aether/internal/socket"
 	"github.com/wambozi/aether/internal/store"
 )
@@ -118,16 +120,19 @@ func run(cfg config, log *slog.Logger) error {
 	cancel()
 
 	// --- Collector ----------------------------------------------------------
+	terminalSrc := sources.NewTerminalSource()
+
 	col := collector.New(db, log)
 	col.Add(&sources.FileSource{Paths: cfg.watchPaths})
 	col.Add(&sources.ProcessSource{})
 	col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
 	col.Add(&sources.HyprlandSource{})
+	col.Add(terminalSrc)
 
 	if err := col.Start(ctx); err != nil {
 		return fmt.Errorf("start collector: %w", err)
 	}
-	log.Info("collector started", "sources", 4)
+	log.Info("collector started", "sources", 5)
 
 	// --- Actuator -----------------------------------------------------------
 	act := actuator.New(log)
@@ -141,7 +146,7 @@ func run(cfg config, log *slog.Logger) error {
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, log)
+	registerHandlers(srv, db, terminalSrc, log)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -161,7 +166,7 @@ func run(cfg config, log *slog.Logger) error {
 
 // --- Socket handlers --------------------------------------------------------
 
-func registerHandlers(srv *socket.Server, db *store.Store, log *slog.Logger) {
+func registerHandlers(srv *socket.Server, db *store.Store, terminalSrc *sources.TerminalSource, log *slog.Logger) {
 	// status — quick health check for aetherctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
 		return socket.Response{
@@ -177,6 +182,42 @@ func registerHandlers(srv *socket.Server, db *store.Store, log *slog.Logger) {
 			return socket.Response{Error: err.Error()}
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(events)}
+	})
+
+	// ingest — called by the shell hook after each command.
+	// Payload: {"cmd":"...","exit_code":0,"cwd":"/home/...","ts":1234567890}
+	srv.Handle("ingest", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Cmd      string `json:"cmd"`
+			ExitCode int    `json:"exit_code"`
+			Cwd      string `json:"cwd"`
+			Ts       int64  `json:"ts"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid ingest payload: " + err.Error()}
+		}
+		if strings.TrimSpace(p.Cmd) == "" {
+			return socket.Response{Error: "cmd is required"}
+		}
+
+		ts := time.Now()
+		if p.Ts > 0 {
+			ts = time.Unix(p.Ts, 0)
+		}
+
+		terminalSrc.Ingest(event.Event{
+			Kind:   event.KindTerminal,
+			Source: "terminal",
+			Payload: map[string]any{
+				"cmd":       p.Cmd,
+				"exit_code": p.ExitCode,
+				"cwd":       p.Cwd,
+			},
+			Timestamp: ts,
+		})
+
+		log.Debug("terminal event ingested", "cmd", p.Cmd, "exit_code", p.ExitCode, "cwd", p.Cwd)
+		return socket.Response{OK: true}
 	})
 }
 

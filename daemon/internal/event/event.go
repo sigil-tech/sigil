@@ -13,6 +13,7 @@ const (
 	KindProcess  Kind = "process"  // /proc polling
 	KindHyprland Kind = "hyprland" // Hyprland compositor IPC
 	KindGit      Kind = "git"      // git repository activity
+	KindTerminal Kind = "terminal" // shell command (pushed via socket ingest)
 	KindAI       Kind = "ai"       // AI interaction (query, suggestion)
 )
 
