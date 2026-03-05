@@ -3,10 +3,10 @@
 // the developer environment.
 //
 // Phase 1 (v0) capabilities:
-//   - Collector: file events, process events, Hyprland IPC, git activity
+//   - Collector: file events, process events, git activity, terminal commands
 //   - Store: SQLite (WAL mode) — all data stays local
 //   - Analyzer: hourly heuristic pass + Cactus LLM summary
-//   - Actuator: desktop notifications via notify-send
+//   - Notifier: 5-level suggestion surfacing via desktop notifications
 //   - Socket: Unix domain socket for aetherctl and the future shell
 package main
 
@@ -23,12 +23,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wambozi/aether/internal/actuator"
 	"github.com/wambozi/aether/internal/analyzer"
 	"github.com/wambozi/aether/internal/cactus"
 	"github.com/wambozi/aether/internal/collector"
 	"github.com/wambozi/aether/internal/collector/sources"
 	"github.com/wambozi/aether/internal/event"
+	"github.com/wambozi/aether/internal/notifier"
 	"github.com/wambozi/aether/internal/socket"
 	"github.com/wambozi/aether/internal/store"
 )
@@ -48,41 +48,44 @@ func main() {
 // --- Config -----------------------------------------------------------------
 
 type config struct {
-	dbPath       string
-	socketPath   string
-	cactusURL    string
-	cactusModel  string
-	cactusRoute  string
-	watchPaths   []string
-	repoPaths    []string
-	analyzeEvery time.Duration
-	logLevel     string
+	dbPath        string
+	socketPath    string
+	cactusURL     string
+	cactusModel   string
+	cactusRoute   string
+	watchPaths    []string
+	repoPaths     []string
+	analyzeEvery  time.Duration
+	notifierLevel int
+	logLevel      string
 }
 
 func parseFlags() config {
 	var (
-		dbPath       = flag.String("db", defaultDBPath(), "SQLite database path")
-		socketPath   = flag.String("socket", defaultSocketPath(), "Unix socket path")
-		cactusURL    = flag.String("cactus-url", "http://127.0.0.1:8080", "Cactus inference endpoint")
-		cactusModel  = flag.String("cactus-model", "local", "Model name to request from Cactus")
-		cactusRoute  = flag.String("cactus-route", "localfirst", "Cactus routing mode: local|localfirst|remotefirst|remote")
-		watchPaths   = flag.String("watch", homeDir(), "Comma-separated directories to watch for file events")
-		repoPaths    = flag.String("repos", homeDir(), "Comma-separated git repository roots to watch")
-		analyzeEvery = flag.Duration("analyze-every", time.Hour, "How often to run an analysis cycle")
-		logLevel     = flag.String("log-level", "info", "Log level: debug|info|warn|error")
+		dbPath        = flag.String("db", defaultDBPath(), "SQLite database path")
+		socketPath    = flag.String("socket", defaultSocketPath(), "Unix socket path")
+		cactusURL     = flag.String("cactus-url", "http://127.0.0.1:8080", "Cactus inference endpoint")
+		cactusModel   = flag.String("cactus-model", "local", "Model name to request from Cactus")
+		cactusRoute   = flag.String("cactus-route", "localfirst", "Cactus routing mode: local|localfirst|remotefirst|remote")
+		watchPaths    = flag.String("watch", homeDir(), "Comma-separated directories to watch for file events")
+		repoPaths     = flag.String("repos", homeDir(), "Comma-separated git repository roots to watch")
+		analyzeEvery  = flag.Duration("analyze-every", time.Hour, "How often to run an analysis cycle")
+		notifierLevel = flag.Int("level", int(notifier.LevelAmbient), "Notification level 0=silent 1=digest 2=ambient 3=conversational 4=autonomous")
+		logLevel      = flag.String("log-level", "info", "Log level: debug|info|warn|error")
 	)
 	flag.Parse()
 
 	return config{
-		dbPath:       *dbPath,
-		socketPath:   *socketPath,
-		cactusURL:    *cactusURL,
-		cactusModel:  *cactusModel,
-		cactusRoute:  *cactusRoute,
-		watchPaths:   splitPaths(*watchPaths),
-		repoPaths:    splitPaths(*repoPaths),
-		analyzeEvery: *analyzeEvery,
-		logLevel:     *logLevel,
+		dbPath:        *dbPath,
+		socketPath:    *socketPath,
+		cactusURL:     *cactusURL,
+		cactusModel:   *cactusModel,
+		cactusRoute:   *cactusRoute,
+		watchPaths:    splitPaths(*watchPaths),
+		repoPaths:     splitPaths(*repoPaths),
+		analyzeEvery:  *analyzeEvery,
+		notifierLevel: *notifierLevel,
+		logLevel:      *logLevel,
 	}
 }
 
@@ -131,21 +134,32 @@ func run(cfg config, log *slog.Logger) error {
 	if err := col.Start(ctx); err != nil {
 		return fmt.Errorf("start collector: %w", err)
 	}
-	log.Info("collector started", "sources", 5)
+	log.Info("collector started", "sources", 4)
 
-	// --- Actuator -----------------------------------------------------------
-	act := actuator.New(log)
+	// --- Notifier -----------------------------------------------------------
+	ntf := notifier.New(db, notifier.Level(cfg.notifierLevel), log)
+	log.Info("notifier started", "level", cfg.notifierLevel)
 
 	// --- Analyzer -----------------------------------------------------------
 	anlz := analyzer.New(db, cactusClient, cfg.analyzeEvery, log)
-	anlz.OnSummary = act.OnSummary
+	anlz.OnSummary = func(s analyzer.Summary) {
+		if s.Insights == "" {
+			return
+		}
+		ntf.Surface(notifier.Suggestion{
+			Category:   "insight",
+			Confidence: notifier.ConfidenceModerate,
+			Title:      "Aether workflow summary",
+			Body:       s.Insights,
+		})
+	}
 
 	go anlz.Run(ctx)
 	log.Info("analyzer started", "interval", cfg.analyzeEvery)
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, terminalSrc, log)
+	registerHandlers(srv, db, ntf, terminalSrc, log)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -165,12 +179,16 @@ func run(cfg config, log *slog.Logger) error {
 
 // --- Socket handlers --------------------------------------------------------
 
-func registerHandlers(srv *socket.Server, db *store.Store, terminalSrc *sources.TerminalSource, log *slog.Logger) {
+func registerHandlers(srv *socket.Server, db *store.Store, ntf *notifier.Notifier, terminalSrc *sources.TerminalSource, log *slog.Logger) {
 	// status — quick health check for aetherctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
 		return socket.Response{
-			OK:      true,
-			Payload: socket.MarshalPayload(map[string]any{"status": "ok", "version": "0.1.0-dev"}),
+			OK: true,
+			Payload: socket.MarshalPayload(map[string]any{
+				"status":          "ok",
+				"version":         "0.1.0-dev",
+				"notifier_level":  int(ntf.Level()),
+			}),
 		}
 	})
 
@@ -181,6 +199,31 @@ func registerHandlers(srv *socket.Server, db *store.Store, terminalSrc *sources.
 			return socket.Response{Error: err.Error()}
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(events)}
+	})
+
+	// suggestions — return recent suggestions from the store.
+	srv.Handle("suggestions", func(ctx context.Context, _ socket.Request) socket.Response {
+		suggestions, err := db.QuerySuggestions(ctx, "", 50)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(suggestions)}
+	})
+
+	// set-level — change the notifier level at runtime.
+	// Payload: {"level": 2}
+	srv.Handle("set-level", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Level int `json:"level"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Level < 0 || p.Level > 4 {
+			return socket.Response{Error: "level must be 0-4"}
+		}
+		ntf.SetLevel(notifier.Level(p.Level))
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"level": p.Level})}
 	})
 
 	// ingest — called by the shell hook after each command.

@@ -207,6 +207,157 @@ func TestInsertPattern_upsert(t *testing.T) {
 	}
 }
 
+// --- InsertSuggestion / QuerySuggestions -----------------------------------
+
+func TestInsertAndQuerySuggestions_roundtrip(t *testing.T) {
+	s := openMemory(t)
+	ctx := context.Background()
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: 0.75,
+		Title:      "Run tests after editing collector",
+		Body:       "You edited files in /internal/collector and usually run tests next.",
+		ActionCmd:  "go test ./internal/collector/...",
+		CreatedAt:  time.Now().Truncate(time.Millisecond),
+	}
+
+	id, err := s.InsertSuggestion(ctx, sg)
+	if err != nil {
+		t.Fatalf("InsertSuggestion: %v", err)
+	}
+	if id <= 0 {
+		t.Fatalf("expected positive ID, got %d", id)
+	}
+
+	got, err := s.QuerySuggestions(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("QuerySuggestions: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 suggestion, got %d", len(got))
+	}
+
+	g := got[0]
+	if g.Category != "pattern" {
+		t.Errorf("Category: got %q, want %q", g.Category, "pattern")
+	}
+	if g.Confidence != 0.75 {
+		t.Errorf("Confidence: got %v, want 0.75", g.Confidence)
+	}
+	if g.Title != sg.Title {
+		t.Errorf("Title: got %q, want %q", g.Title, sg.Title)
+	}
+	if g.ActionCmd != sg.ActionCmd {
+		t.Errorf("ActionCmd: got %q, want %q", g.ActionCmd, sg.ActionCmd)
+	}
+	if g.Status != StatusPending {
+		t.Errorf("Status: got %q, want %q", g.Status, StatusPending)
+	}
+}
+
+func TestQuerySuggestions_filterByStatus(t *testing.T) {
+	s := openMemory(t)
+	ctx := context.Background()
+
+	insert := func(title string) int64 {
+		t.Helper()
+		id, err := s.InsertSuggestion(ctx, Suggestion{
+			Category: "insight", Confidence: 0.6,
+			Title: title, Body: "body", CreatedAt: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("InsertSuggestion: %v", err)
+		}
+		return id
+	}
+
+	id1 := insert("first")
+	insert("second")
+
+	// Mark one as shown.
+	if err := s.UpdateSuggestionStatus(ctx, id1, StatusShown); err != nil {
+		t.Fatalf("UpdateSuggestionStatus: %v", err)
+	}
+
+	shown, err := s.QuerySuggestions(ctx, StatusShown, 10)
+	if err != nil {
+		t.Fatalf("QuerySuggestions(shown): %v", err)
+	}
+	if len(shown) != 1 {
+		t.Errorf("expected 1 shown suggestion, got %d", len(shown))
+	}
+
+	pending, err := s.QuerySuggestions(ctx, StatusPending, 10)
+	if err != nil {
+		t.Fatalf("QuerySuggestions(pending): %v", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("expected 1 pending suggestion, got %d", len(pending))
+	}
+}
+
+func TestUpdateSuggestionStatus_setsTimestamps(t *testing.T) {
+	s := openMemory(t)
+	ctx := context.Background()
+
+	id, err := s.InsertSuggestion(ctx, Suggestion{
+		Category: "reminder", Confidence: 0.7,
+		Title: "t", Body: "b", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("InsertSuggestion: %v", err)
+	}
+
+	if err := s.UpdateSuggestionStatus(ctx, id, StatusShown); err != nil {
+		t.Fatalf("UpdateSuggestionStatus(shown): %v", err)
+	}
+	got, _ := s.QuerySuggestions(ctx, StatusShown, 1)
+	if got[0].ShownAt == nil {
+		t.Error("expected shown_at to be set after StatusShown")
+	}
+
+	if err := s.UpdateSuggestionStatus(ctx, id, StatusAccepted); err != nil {
+		t.Fatalf("UpdateSuggestionStatus(accepted): %v", err)
+	}
+	got, _ = s.QuerySuggestions(ctx, StatusAccepted, 1)
+	if got[0].ResolvedAt == nil {
+		t.Error("expected resolved_at to be set after StatusAccepted")
+	}
+}
+
+func TestQuerySuggestions_emptyStore(t *testing.T) {
+	s := openMemory(t)
+	ctx := context.Background()
+
+	got, err := s.QuerySuggestions(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("QuerySuggestions on empty store: %v", err)
+	}
+	if got == nil {
+		t.Error("expected empty slice, got nil")
+	}
+}
+
+// --- InsertFeedback --------------------------------------------------------
+
+func TestInsertFeedback(t *testing.T) {
+	s := openMemory(t)
+	ctx := context.Background()
+
+	id, err := s.InsertSuggestion(ctx, Suggestion{
+		Category: "pattern", Confidence: 0.8,
+		Title: "t", Body: "b", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("InsertSuggestion: %v", err)
+	}
+
+	if err := s.InsertFeedback(ctx, id, "accepted"); err != nil {
+		t.Fatalf("InsertFeedback: %v", err)
+	}
+}
+
 // --- migrate idempotency ---------------------------------------------------
 
 func TestMigrate_idempotent(t *testing.T) {

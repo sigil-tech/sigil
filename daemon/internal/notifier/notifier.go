@@ -1,0 +1,212 @@
+// Package notifier surfaces analyzer suggestions to the user at a configured
+// aggression level.  All suggestions are persisted to the store regardless of
+// level so they are always queryable via aetherctl.
+//
+// Five levels (matching the product plan):
+//
+//	0 – Silent:         store only, never displayed
+//	1 – Digest:         one daily summary notification
+//	2 – Ambient:        real-time, auto-dismissing toasts (default)
+//	3 – Conversational: toasts with an action button
+//	4 – Autonomous:     auto-execute high-confidence actions with countdown
+package notifier
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/wambozi/aether/internal/store"
+)
+
+// Level controls how aggressively suggestions are surfaced.
+type Level int
+
+const (
+	LevelSilent        Level = 0
+	LevelDigest        Level = 1
+	LevelAmbient       Level = 2 // default
+	LevelConversational Level = 3
+	LevelAutonomous    Level = 4
+)
+
+// Confidence thresholds — suggestions below the level's minimum are stored but
+// not displayed until enough observations have accumulated.
+const (
+	ConfidenceWeak      = 0.3 // 2-3 observations
+	ConfidenceModerate  = 0.6 // 5-10 observations — minimum for LevelAmbient
+	ConfidenceStrong    = 0.8 // 15+ observations
+	ConfidenceVeryStrong = 0.9 // 25+ — eligible for LevelAutonomous auto-execute
+)
+
+// Suggestion is a single insight ready to be surfaced.  It mirrors
+// store.Suggestion but lives here to decouple callers from the store package.
+type Suggestion struct {
+	Category   string  // "pattern", "reminder", "optimization", "insight"
+	Confidence float64 // 0.0–1.0
+	Title      string  // Short headline (≤60 chars)
+	Body       string  // One-sentence detail
+	ActionCmd  string  // Optional shell command (empty if not actionable)
+}
+
+// platform is the interface each OS backend implements.
+type platform interface {
+	send(title, body string, withAction bool)
+	execute(cmd string) error
+}
+
+// Notifier stores every suggestion and surfaces it according to the current
+// Level.
+type Notifier struct {
+	mu       sync.RWMutex
+	level    Level
+	store    *store.Store
+	platform platform
+	log      *slog.Logger
+
+	// digestQueue accumulates suggestions for the daily digest (Level 1).
+	digestQueue []Suggestion
+}
+
+// New creates a Notifier at the given level.
+func New(s *store.Store, level Level, log *slog.Logger) *Notifier {
+	return &Notifier{
+		level:    level,
+		store:    s,
+		platform: newPlatform(log),
+		log:      log,
+	}
+}
+
+// Level returns the current notification level.
+func (n *Notifier) Level() Level {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.level
+}
+
+// SetLevel changes the notification level at runtime.
+func (n *Notifier) SetLevel(l Level) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.level = l
+	n.log.Info("notifier: level changed", "level", l)
+}
+
+// Surface persists the suggestion and displays it according to the current
+// level.  Safe to call from any goroutine; storage and display are
+// non-blocking.
+func (n *Notifier) Surface(sg Suggestion) {
+	ctx := context.Background()
+
+	// Always persist — every suggestion is queryable via aetherctl regardless
+	// of whether it was ever shown.
+	id, err := n.store.InsertSuggestion(ctx, store.Suggestion{
+		Category:   sg.Category,
+		Confidence: sg.Confidence,
+		Title:      sg.Title,
+		Body:       sg.Body,
+		ActionCmd:  sg.ActionCmd,
+		CreatedAt:  time.Now(),
+	})
+	if err != nil {
+		n.log.Warn("notifier: persist suggestion", "err", err)
+		// Non-fatal — still attempt to display if possible.
+	}
+
+	n.mu.RLock()
+	level := n.level
+	n.mu.RUnlock()
+
+	switch level {
+	case LevelSilent:
+		// Stored above; nothing more to do.
+
+	case LevelDigest:
+		n.mu.Lock()
+		n.digestQueue = append(n.digestQueue, sg)
+		n.mu.Unlock()
+
+	case LevelAmbient:
+		if sg.Confidence < ConfidenceModerate {
+			return // not confident enough to interrupt
+		}
+		go n.show(id, sg, false)
+
+	case LevelConversational:
+		go n.show(id, sg, sg.ActionCmd != "")
+
+	case LevelAutonomous:
+		if sg.ActionCmd != "" && sg.Confidence >= ConfidenceVeryStrong {
+			go n.executeWithCountdown(id, sg)
+		} else {
+			go n.show(id, sg, sg.ActionCmd != "")
+		}
+	}
+}
+
+// FlushDigest surfaces all queued digest suggestions as a single notification.
+// Call this on a daily schedule (e.g. at 09:00) when level == LevelDigest.
+func (n *Notifier) FlushDigest() {
+	n.mu.Lock()
+	queue := n.digestQueue
+	n.digestQueue = nil
+	n.mu.Unlock()
+
+	if len(queue) == 0 {
+		return
+	}
+
+	// Combine all queued suggestions into one digest notification.
+	body := ""
+	for i, sg := range queue {
+		if i > 0 {
+			body += "\n"
+		}
+		body += "• " + sg.Title + ": " + sg.Body
+	}
+
+	n.platform.send("Aether daily digest", body, false)
+}
+
+// show marks the suggestion as shown, sends the notification, then marks it
+// ignored if the user doesn't interact (notification auto-dismisses).
+func (n *Notifier) show(id int64, sg Suggestion, withAction bool) {
+	ctx := context.Background()
+	_ = n.store.UpdateSuggestionStatus(ctx, id, store.StatusShown)
+
+	n.platform.send(sg.Title, sg.Body, withAction)
+
+	// For v0, all shown suggestions that aren't explicitly acted on are marked
+	// ignored after a short window.  Phase 3 will hook into D-Bus action
+	// callbacks for proper accept/dismiss tracking.
+	time.Sleep(30 * time.Second)
+	_ = n.store.UpdateSuggestionStatus(ctx, id, store.StatusIgnored)
+}
+
+// executeWithCountdown announces the action, waits 3 seconds for cancellation,
+// then executes it.  For v0 the cancel window is advisory — there's no terminal
+// UI to receive input, so it just logs.
+func (n *Notifier) executeWithCountdown(id int64, sg Suggestion) {
+	ctx := context.Background()
+	n.log.Info("notifier: autonomous action in 3s",
+		"cmd", sg.ActionCmd, "title", sg.Title)
+
+	n.platform.send(
+		sg.Title,
+		sg.Body+"\n[Running in 3s: "+sg.ActionCmd+"]",
+		false,
+	)
+
+	time.Sleep(3 * time.Second)
+
+	n.log.Info("notifier: executing autonomous action", "cmd", sg.ActionCmd)
+	if err := n.platform.execute(sg.ActionCmd); err != nil {
+		n.log.Warn("notifier: autonomous action failed", "cmd", sg.ActionCmd, "err", err)
+		_ = n.store.UpdateSuggestionStatus(ctx, id, store.StatusIgnored)
+		return
+	}
+	_ = n.store.UpdateSuggestionStatus(ctx, id, store.StatusAccepted)
+	_ = n.store.InsertFeedback(ctx, id, "auto_executed")
+}

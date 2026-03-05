@@ -1,0 +1,27 @@
+//go:build !linux
+
+package notifier
+
+import (
+	"log/slog"
+	"os/exec"
+)
+
+// otherPlatform is a no-op backend used on non-Linux systems (Windows, macOS)
+// during development.  On the actual target (NixOS), platform_linux.go is used.
+type otherPlatform struct {
+	log *slog.Logger
+}
+
+func newPlatform(log *slog.Logger) platform {
+	return &otherPlatform{log: log}
+}
+
+func (p *otherPlatform) send(title, body string, _ bool) {
+	p.log.Info("notifier: [stub] would send notification", "title", title, "body", body)
+}
+
+func (p *otherPlatform) execute(shellCmd string) error {
+	p.log.Info("notifier: [stub] would execute", "cmd", shellCmd)
+	return exec.ErrNotFound
+}

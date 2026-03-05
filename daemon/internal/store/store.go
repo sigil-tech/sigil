@@ -150,6 +150,134 @@ func (s *Store) InsertPattern(ctx context.Context, kind string, summary any) err
 	return err
 }
 
+// --- Suggestions -----------------------------------------------------------
+
+// SuggestionStatus is the lifecycle state of a surfaced suggestion.
+type SuggestionStatus string
+
+const (
+	StatusPending   SuggestionStatus = "pending"
+	StatusShown     SuggestionStatus = "shown"
+	StatusAccepted  SuggestionStatus = "accepted"
+	StatusDismissed SuggestionStatus = "dismissed"
+	StatusIgnored   SuggestionStatus = "ignored"
+)
+
+// Suggestion is a single insight produced by the analyzer and tracked through
+// its full lifecycle (created → shown → accepted/dismissed/ignored).
+type Suggestion struct {
+	ID         int64            `json:"id,omitempty"`
+	Category   string           `json:"category"`   // "pattern", "reminder", "optimization", "insight"
+	Confidence float64          `json:"confidence"` // 0.0-1.0
+	Title      string           `json:"title"`
+	Body       string           `json:"body"`
+	ActionCmd  string           `json:"action_cmd,omitempty"` // optional shell command
+	Status     SuggestionStatus `json:"status"`
+	CreatedAt  time.Time        `json:"created_at"`
+	ShownAt    *time.Time       `json:"shown_at,omitempty"`
+	ResolvedAt *time.Time       `json:"resolved_at,omitempty"`
+}
+
+// InsertSuggestion persists a new suggestion and returns its assigned ID.
+func (s *Store) InsertSuggestion(ctx context.Context, sg Suggestion) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO suggestions (category, confidence, title, body, action_cmd, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sg.Category, sg.Confidence, sg.Title, sg.Body,
+		sg.ActionCmd, string(StatusPending), sg.CreatedAt.UnixMilli(),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: insert suggestion: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// UpdateSuggestionStatus advances a suggestion's status and records the
+// shown_at / resolved_at timestamps where appropriate.
+func (s *Store) UpdateSuggestionStatus(ctx context.Context, id int64, status SuggestionStatus) error {
+	now := time.Now().UnixMilli()
+	var err error
+	switch status {
+	case StatusShown:
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE suggestions SET status = ?, shown_at = ? WHERE id = ?`,
+			string(status), now, id)
+	case StatusAccepted, StatusDismissed, StatusIgnored:
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE suggestions SET status = ?, resolved_at = ? WHERE id = ?`,
+			string(status), now, id)
+	default:
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE suggestions SET status = ? WHERE id = ?`,
+			string(status), id)
+	}
+	return err
+}
+
+// QuerySuggestions returns the most recent n suggestions, optionally filtered
+// by status.  Pass an empty string to return all statuses.
+func (s *Store) QuerySuggestions(ctx context.Context, status SuggestionStatus, n int) ([]Suggestion, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if status == "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, category, confidence, title, body, action_cmd, status, created_at, shown_at, resolved_at
+			 FROM suggestions ORDER BY created_at DESC LIMIT ?`, n)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, category, confidence, title, body, action_cmd, status, created_at, shown_at, resolved_at
+			 FROM suggestions WHERE status = ? ORDER BY created_at DESC LIMIT ?`,
+			string(status), n)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: query suggestions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Suggestion, 0)
+	for rows.Next() {
+		var (
+			sg            Suggestion
+			actionCmd     sql.NullString
+			createdAtMS   int64
+			shownAtMS     sql.NullInt64
+			resolvedAtMS  sql.NullInt64
+		)
+		if err := rows.Scan(
+			&sg.ID, &sg.Category, &sg.Confidence, &sg.Title, &sg.Body,
+			&actionCmd, (*string)(&sg.Status),
+			&createdAtMS, &shownAtMS, &resolvedAtMS,
+		); err != nil {
+			return nil, err
+		}
+		sg.ActionCmd = actionCmd.String
+		sg.CreatedAt = time.UnixMilli(createdAtMS)
+		if shownAtMS.Valid {
+			t := time.UnixMilli(shownAtMS.Int64)
+			sg.ShownAt = &t
+		}
+		if resolvedAtMS.Valid {
+			t := time.UnixMilli(resolvedAtMS.Int64)
+			sg.ResolvedAt = &t
+		}
+		out = append(out, sg)
+	}
+	return out, rows.Err()
+}
+
+// --- Feedback --------------------------------------------------------------
+
+// InsertFeedback records the outcome of a surfaced suggestion.
+func (s *Store) InsertFeedback(ctx context.Context, suggestionID int64, outcome string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO feedback (suggestion_id, outcome, ts) VALUES (?, ?, ?)`,
+		suggestionID, outcome, time.Now().UnixMilli(),
+	)
+	return err
+}
+
 // migrate creates all tables and indexes if they do not already exist.
 // Idempotent — safe to call on every startup.
 func migrate(db *sql.DB) error {
@@ -184,6 +312,27 @@ CREATE TABLE IF NOT EXISTS patterns (
     summary    TEXT    NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS suggestions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    category    TEXT    NOT NULL,
+    confidence  REAL    NOT NULL,
+    title       TEXT    NOT NULL,
+    body        TEXT    NOT NULL,
+    action_cmd  TEXT,
+    status      TEXT    NOT NULL DEFAULT 'pending',
+    created_at  INTEGER NOT NULL,
+    shown_at    INTEGER,
+    resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions (status);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+    outcome       TEXT    NOT NULL,
+    ts            INTEGER NOT NULL
 );`
 
 	_, err := db.Exec(schema)
