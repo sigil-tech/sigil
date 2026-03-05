@@ -69,7 +69,7 @@ type chatResponse struct {
 	// Cactus-specific extension: routing metadata.
 	// These fields may be absent when talking to a non-Cactus backend.
 	CactusRouting struct {
-		Decision string `json:"decision"` // "local" | "cloud"
+		Decision  string `json:"decision"` // "local" | "cloud"
 		LatencyMS int64  `json:"latency_ms"`
 	} `json:"cactus_routing,omitempty"`
 }

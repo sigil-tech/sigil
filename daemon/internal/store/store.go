@@ -103,7 +103,7 @@ func (s *Store) QueryEvents(ctx context.Context, kind event.Kind, n int) ([]even
 	}
 	defer rows.Close()
 
-	var events []event.Event
+	events := make([]event.Event, 0)
 	for rows.Next() {
 		var (
 			e       event.Event

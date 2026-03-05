@@ -23,7 +23,7 @@ const (
 type Event struct {
 	ID        int64          `json:"id,omitempty"`
 	Kind      Kind           `json:"kind"`
-	Source    string         `json:"source"`           // e.g. "files", "hyprland"
+	Source    string         `json:"source"` // e.g. "files", "hyprland"
 	Payload   map[string]any `json:"payload"`
 	Timestamp time.Time      `json:"timestamp"`
 }
