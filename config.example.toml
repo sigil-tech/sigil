@@ -1,0 +1,39 @@
+# Aether daemon configuration
+# Copy to ~/.config/aether/config.toml and edit as needed.
+# All paths support ~ expansion.
+
+[notifier]
+# 0 = silent (store only, query via aetherctl)
+# 1 = digest (one daily summary at digest_time)
+# 2 = ambient (real-time toasts, no actions) — default
+# 3 = conversational (toasts with action buttons)
+# 4 = autonomous (auto-execute high-confidence actions)
+level = 2
+
+[collector]
+# Directories to watch for file-system events.
+watch_dirs = ["~/code"]
+# Patterns to ignore (matched against full path).
+ignore_patterns = [".git", "node_modules", "vendor", "__pycache__", ".next", "dist"]
+
+[inference]
+# Cactus Compute endpoint (OpenAI-compatible).
+cactus_url = "http://127.0.0.1:8080"
+# Model routing: local | localfirst | remotefirst | remote
+cactus_route = "localfirst"
+# Model name requested from Cactus.
+cactus_model = "local"
+
+[schedule]
+# How often to run a full analysis cycle.
+analyze_every = "1h"
+# Time to deliver the daily digest (level 1 only). 24h format, local time.
+digest_time = "09:00"
+
+[store]
+# SQLite database path. Default: $XDG_DATA_HOME/aetherd/data.db
+# db_path = "~/.local/share/aetherd/data.db"
+
+[socket]
+# Unix socket path. Default: $XDG_RUNTIME_DIR/aetherd.sock
+# socket_path = "/run/user/1000/aetherd.sock"

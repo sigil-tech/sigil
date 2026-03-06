@@ -267,6 +267,109 @@ func (s *Store) QuerySuggestions(ctx context.Context, status SuggestionStatus, n
 	return out, rows.Err()
 }
 
+// --- Pattern query helpers -------------------------------------------------
+
+// FileEditCount holds a file path and the number of times it was edited in a
+// query window.
+type FileEditCount struct {
+	Path  string
+	Count int64
+}
+
+// QueryTopFiles returns the n most-edited files (kind="file") since the given
+// time, ordered by edit count descending.  The path is extracted from the
+// JSON payload field "path".  Rows whose payload cannot be decoded are
+// silently skipped — a single malformed row should not abort the query.
+func (s *Store) QueryTopFiles(ctx context.Context, since time.Time, n int) ([]FileEditCount, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT payload FROM events WHERE kind = ? AND ts >= ? ORDER BY ts DESC`,
+		string(event.KindFile), since.UnixMilli(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query top files: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int64)
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("store: scan top files row: %w", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			continue // skip malformed row
+		}
+		path, _ := payload["path"].(string)
+		if path == "" {
+			continue
+		}
+		counts[path]++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate top files: %w", err)
+	}
+
+	// Collect into a slice and sort by count descending.
+	out := make([]FileEditCount, 0, len(counts))
+	for path, count := range counts {
+		out = append(out, FileEditCount{Path: path, Count: count})
+	}
+	// Insertion sort is fine here — top-5 from a moderate set.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].Count > out[j-1].Count; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out, nil
+}
+
+// QueryTerminalEvents returns all terminal events (kind="terminal") with a
+// timestamp at or after since, ordered by timestamp ascending.
+func (s *Store) QueryTerminalEvents(ctx context.Context, since time.Time) ([]event.Event, error) {
+	return s.queryEventsSince(ctx, event.KindTerminal, since)
+}
+
+// QueryRecentFileEvents returns all file events (kind="file") with a timestamp
+// at or after since, ordered by timestamp ascending.
+func (s *Store) QueryRecentFileEvents(ctx context.Context, since time.Time) ([]event.Event, error) {
+	return s.queryEventsSince(ctx, event.KindFile, since)
+}
+
+// queryEventsSince is the shared implementation for time-windowed event queries.
+func (s *Store) queryEventsSince(ctx context.Context, kind event.Kind, since time.Time) ([]event.Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, kind, source, payload, ts FROM events
+		 WHERE kind = ? AND ts >= ? ORDER BY ts ASC`,
+		string(kind), since.UnixMilli(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query %s events since: %w", kind, err)
+	}
+	defer rows.Close()
+
+	var out []event.Event
+	for rows.Next() {
+		var (
+			e       event.Event
+			payload string
+			tsMS    int64
+		)
+		if err := rows.Scan(&e.ID, (*string)(&e.Kind), &e.Source, &payload, &tsMS); err != nil {
+			return nil, fmt.Errorf("store: scan %s event: %w", kind, err)
+		}
+		if err := json.Unmarshal([]byte(payload), &e.Payload); err != nil {
+			return nil, fmt.Errorf("store: unmarshal %s payload: %w", kind, err)
+		}
+		e.Timestamp = time.UnixMilli(tsMS)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // --- Feedback --------------------------------------------------------------
 
 // InsertFeedback records the outcome of a surfaced suggestion.

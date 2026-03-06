@@ -16,6 +16,7 @@ import (
 
 	"github.com/wambozi/aether/internal/cactus"
 	"github.com/wambozi/aether/internal/event"
+	"github.com/wambozi/aether/internal/notifier"
 	"github.com/wambozi/aether/internal/store"
 )
 
@@ -28,14 +29,20 @@ type Summary struct {
 	Insights      string // LLM-generated narrative (may be empty)
 	CactusRouting string // "local" | "cloud" | "" (not yet queried)
 	GeneratedAt   time.Time
+
+	// Suggestions are pattern-based insights produced by the local heuristic
+	// detector.  Callers should surface each one via notifier.Surface.
+	Suggestions []notifier.Suggestion
 }
 
 // Analyzer drives both the local heuristic pass and the periodic Cactus query.
 type Analyzer struct {
-	store    *store.Store
-	cactus   *cactus.Client
-	interval time.Duration
-	log      *slog.Logger
+	store     *store.Store
+	cactus    *cactus.Client
+	detector  *Detector
+	interval  time.Duration
+	log       *slog.Logger
+	triggerCh chan struct{}
 
 	// OnSummary is called every time a new summary is produced.
 	// It runs in the analyzer goroutine — implementations must be non-blocking
@@ -47,10 +54,22 @@ type Analyzer struct {
 // (the product plan specifies hourly for v0).
 func New(s *store.Store, c *cactus.Client, interval time.Duration, log *slog.Logger) *Analyzer {
 	return &Analyzer{
-		store:    s,
-		cactus:   c,
-		interval: interval,
-		log:      log,
+		store:     s,
+		cactus:    c,
+		detector:  NewDetector(s, log),
+		interval:  interval,
+		log:       log,
+		triggerCh: make(chan struct{}, 1),
+	}
+}
+
+// Trigger requests an immediate analysis cycle outside the normal interval.
+// Non-blocking: if a trigger is already pending, the call is a no-op.
+func (a *Analyzer) Trigger() {
+	select {
+	case a.triggerCh <- struct{}{}:
+	default:
+		// A trigger is already queued; no need to queue another.
 	}
 }
 
@@ -67,6 +86,9 @@ func (a *Analyzer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			a.runCycle(ctx)
+		case <-a.triggerCh:
+			a.log.Info("analyzer: manual trigger received")
 			a.runCycle(ctx)
 		}
 	}
@@ -119,6 +141,13 @@ func (a *Analyzer) localPass(ctx context.Context) (Summary, error) {
 		}
 		summary.EventCounts[k] = n
 	}
+
+	suggestions, err := a.detector.Detect(ctx, a.interval)
+	if err != nil {
+		// Non-fatal: pattern detection failures should not suppress the summary.
+		a.log.Warn("analyzer: pattern detection", "err", err)
+	}
+	summary.Suggestions = suggestions
 
 	return summary, nil
 }
