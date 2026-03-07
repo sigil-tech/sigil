@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -623,6 +624,34 @@ func registerHandlers(
 			return socket.Response{Error: fmt.Sprintf("purge: %s", err)}
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
+	})
+
+	// undo — executes the undo command for the most recent undoable action.
+	srv.Handle("undo", func(ctx context.Context, _ socket.Request) socket.Response {
+		actions, err := db.QueryUndoableActions(ctx)
+		if err != nil || len(actions) == 0 {
+			return socket.Response{Error: "no undoable actions"}
+		}
+		a := actions[len(actions)-1]
+		if a.UndoCmd == "" {
+			return socket.Response{Error: "action is not reversible"}
+		}
+		if err := exec.Command("sh", "-c", a.UndoCmd).Run(); err != nil {
+			return socket.Response{Error: fmt.Sprintf("undo failed: %s", err)}
+		}
+		_ = db.MarkActionUndone(ctx, a.ID)
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"undone": a.Description,
+		})}
+	})
+
+	// actions — returns recent undoable actions.
+	srv.Handle("actions", func(ctx context.Context, _ socket.Request) socket.Response {
+		actions, err := db.QueryUndoableActions(ctx)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(actions)}
 	})
 
 	// view-changed — called by the shell when the active tool view changes.

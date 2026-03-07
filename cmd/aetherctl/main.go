@@ -77,6 +77,8 @@ func run() error {
 		return cmdFeedback(*socketPath, args)
 	case "config":
 		return cmdConfig(*socketPath)
+	case "actions":
+		return cmdActions(*socketPath)
 	case "purge":
 		return cmdPurge(*dbPath)
 	case "export":
@@ -467,6 +469,43 @@ func defaultDBPath() string {
 	return filepath.Join(base, "aetherd", "data.db")
 }
 
+// cmdActions prints recent undoable actions.
+func cmdActions(socketPath string) error {
+	resp, err := call(socketPath, "actions", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var actions []struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+		UndoCmd     string `json:"undo_cmd"`
+		ExpiresAt   string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(resp.Payload, &actions); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(actions) == 0 {
+		fmt.Println("No undoable actions.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tDESCRIPTION\tUNDO CMD\tEXPIRES")
+	for _, a := range actions {
+		undoLabel := a.UndoCmd
+		if undoLabel == "" {
+			undoLabel = "(irreversible)"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", a.ID, a.Description, undoLabel, a.ExpiresAt)
+	}
+	return w.Flush()
+}
+
 // cmdConfig fetches the resolved daemon configuration and prints it as a
 // key = value table.
 func cmdConfig(socketPath string) error {
@@ -554,6 +593,7 @@ Commands:
   level N                       Set notification level (0=silent 1=digest
                                 2=ambient 3=conversational 4=autonomous)
   feedback <id> accept|dismiss  Respond to a suggestion by ID
+  actions                       Show recent undoable actions
   config                        Print resolved daemon configuration
   purge                         Delete all local data (requires confirmation)
   export                        Export all data as newline-delimited JSON
