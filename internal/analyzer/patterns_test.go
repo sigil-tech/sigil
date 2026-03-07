@@ -172,13 +172,17 @@ func TestDetector_EmptyStore_noSuggestionsNoError(t *testing.T) {
 func TestDetector_ContextSwitchFrequency_aboveLimit_suggestionReturned(t *testing.T) {
 	db := openMemoryStore(t)
 	ctx := context.Background()
-	now := time.Now()
+
+	// Anchor events to the middle of the current clock hour so they are
+	// guaranteed to fall within a single hour bucket regardless of when the
+	// test runs.
+	anchor := time.Now().Truncate(time.Hour).Add(30 * time.Minute)
 
 	// Generate 8 distinct directory changes within the same hour.
 	dirs := []string{"/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h", "/i"}
 	for i, dir := range dirs {
 		insertTerminal(t, ctx, db, "ls", 0, dir,
-			now.Add(-time.Duration(len(dirs)-i)*5*time.Minute))
+			anchor.Add(time.Duration(i)*time.Minute))
 	}
 
 	det := NewDetector(db, newTestLogger())
