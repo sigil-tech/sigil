@@ -372,6 +372,74 @@ func (s *Store) queryEventsSince(ctx context.Context, kind event.Kind, since tim
 	return out, rows.Err()
 }
 
+// QueryAIInteractions returns AI interaction records since the given time, ordered ascending.
+func (s *Store) QueryAIInteractions(ctx context.Context, since time.Time) ([]event.AIInteraction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, query_text, query_category, routing, latency_ms, accepted, ts
+		 FROM ai_interactions WHERE ts >= ? ORDER BY ts ASC`,
+		since.UnixMilli(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query ai interactions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []event.AIInteraction
+	for rows.Next() {
+		var (
+			ai       event.AIInteraction
+			queryTxt sql.NullString
+			queryCat sql.NullString
+			accepted int
+			tsMS     int64
+		)
+		if err := rows.Scan(&ai.ID, &queryTxt, &queryCat, &ai.Routing, &ai.LatencyMS, &accepted, &tsMS); err != nil {
+			return nil, fmt.Errorf("store: scan ai interaction: %w", err)
+		}
+		ai.QueryText = queryTxt.String
+		ai.QueryCategory = queryCat.String
+		ai.Accepted = accepted != 0
+		ai.Timestamp = time.UnixMilli(tsMS)
+		out = append(out, ai)
+	}
+	return out, rows.Err()
+}
+
+// QuerySuggestionAcceptanceRate returns the ratio of accepted/(accepted+dismissed) suggestions
+// since the given time. Returns 0.0 if no resolved suggestions exist.
+func (s *Store) QuerySuggestionAcceptanceRate(ctx context.Context, since time.Time) (float64, error) {
+	var accepted, total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM suggestions WHERE status = 'accepted' AND resolved_at >= ?`,
+		since.UnixMilli(),
+	).Scan(&accepted)
+	if err != nil {
+		return 0, fmt.Errorf("store: query acceptance rate (accepted): %w", err)
+	}
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM suggestions WHERE status IN ('accepted','dismissed') AND resolved_at >= ?`,
+		since.UnixMilli(),
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("store: query acceptance rate (total): %w", err)
+	}
+	if total == 0 {
+		return 0, nil
+	}
+	return float64(accepted) / float64(total), nil
+}
+
+// QueryResolvedSuggestionCount returns the number of suggestions with status
+// 'accepted' or 'dismissed' resolved since the given time.
+func (s *Store) QueryResolvedSuggestionCount(ctx context.Context, since time.Time) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM suggestions WHERE status IN ('accepted','dismissed') AND resolved_at >= ?`,
+		since.UnixMilli(),
+	).Scan(&count)
+	return count, err
+}
+
 // --- Feedback --------------------------------------------------------------
 
 // InsertFeedback records the outcome of a surfaced suggestion.

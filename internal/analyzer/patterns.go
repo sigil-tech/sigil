@@ -57,6 +57,10 @@ func (d *Detector) Detect(ctx context.Context, window time.Duration) ([]notifier
 		{"build_failure_streak", d.checkBuildFailureStreak},
 		{"context_switch_frequency", d.checkContextSwitchFrequency},
 		{"time_of_day", d.checkTimeOfDay},
+		{"day_of_week_productivity", d.checkDayOfWeekProductivity},
+		{"session_length", d.checkSessionLength},
+		{"ai_query_category_trends", d.checkAIQueryCategoryTrends},
+		{"suggestion_acceptance_trend", d.checkSuggestionAcceptanceTrend},
 	}
 
 	var out []notifier.Suggestion
@@ -360,6 +364,195 @@ func (d *Detector) checkTimeOfDay(ctx context.Context, since time.Time) ([]notif
 			peakHour, peakHour+1, peakCount,
 		),
 	}}, nil
+}
+
+// sessionGap is the minimum idle time between consecutive terminal events
+// required to split them into separate sessions.
+const sessionGap = 2 * time.Hour
+
+// checkDayOfWeekProductivity groups file-edit counts by weekday, finds the most
+// productive day, and emits a suggestion when peak is >= 2x trough and peak has >= 10 edits.
+func (d *Detector) checkDayOfWeekProductivity(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	fileEvents, err := d.store.QueryRecentFileEvents(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: day_of_week_productivity: %w", err)
+	}
+	if len(fileEvents) == 0 {
+		return nil, nil
+	}
+
+	editsByDay := make(map[time.Weekday]int)
+	for _, fe := range fileEvents {
+		editsByDay[fe.Timestamp.Weekday()]++
+	}
+
+	if len(editsByDay) < 2 {
+		return nil, nil
+	}
+
+	peakDay := time.Sunday
+	peakCount := 0
+	troughCount := int(^uint(0) >> 1) // max int
+	for day, n := range editsByDay {
+		if n > peakCount {
+			peakCount = n
+			peakDay = day
+		}
+		if n < troughCount {
+			troughCount = n
+		}
+	}
+
+	if peakCount < 10 || troughCount == 0 || peakCount < 2*troughCount {
+		return nil, nil
+	}
+
+	return []notifier.Suggestion{{
+		Category:   "insight",
+		Confidence: notifier.ConfidenceWeak,
+		Title:      "Day-of-week productivity pattern",
+		Body: fmt.Sprintf(
+			"Your most productive day is %s with %d edits — %dx more than your quietest day.",
+			peakDay, peakCount, peakCount/troughCount,
+		),
+	}}, nil
+}
+
+// checkSessionLength computes average coding session length from terminal events
+// and emits a suggestion when the average exceeds 60 minutes with at least 3 sessions.
+func (d *Detector) checkSessionLength(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	termEvents, err := d.store.QueryTerminalEvents(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: session_length: %w", err)
+	}
+	if len(termEvents) < 2 {
+		return nil, nil
+	}
+
+	var sessions []time.Duration
+	sessionStart := termEvents[0].Timestamp
+	lastTS := termEvents[0].Timestamp
+
+	for i := 1; i < len(termEvents); i++ {
+		gap := termEvents[i].Timestamp.Sub(lastTS)
+		if gap > sessionGap {
+			sessions = append(sessions, lastTS.Sub(sessionStart))
+			sessionStart = termEvents[i].Timestamp
+		}
+		lastTS = termEvents[i].Timestamp
+	}
+	// Close the final session.
+	sessions = append(sessions, lastTS.Sub(sessionStart))
+
+	if len(sessions) < 3 {
+		return nil, nil
+	}
+
+	var totalMinutes int
+	for _, s := range sessions {
+		totalMinutes += int(s.Minutes())
+	}
+	avgMinutes := totalMinutes / len(sessions)
+
+	if avgMinutes <= 60 {
+		return nil, nil
+	}
+
+	return []notifier.Suggestion{{
+		Category:   "insight",
+		Confidence: notifier.ConfidenceWeak,
+		Title:      "Long coding sessions",
+		Body: fmt.Sprintf(
+			"Average coding session: %d minutes (based on terminal activity).",
+			avgMinutes,
+		),
+	}}, nil
+}
+
+// checkAIQueryCategoryTrends tallies AI interactions by QueryCategory and emits
+// a suggestion for the top category if it accounts for >= 50%% of queries and
+// there are >= 5 total.
+func (d *Detector) checkAIQueryCategoryTrends(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	interactions, err := d.store.QueryAIInteractions(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: ai_query_category_trends: %w", err)
+	}
+	if len(interactions) < 5 {
+		return nil, nil
+	}
+
+	counts := make(map[string]int)
+	for _, ai := range interactions {
+		if ai.QueryCategory != "" {
+			counts[ai.QueryCategory]++
+		}
+	}
+
+	topCat := ""
+	topCount := 0
+	for cat, n := range counts {
+		if n > topCount {
+			topCount = n
+			topCat = cat
+		}
+	}
+
+	total := len(interactions)
+	pct := topCount * 100 / total
+	if pct < 50 {
+		return nil, nil
+	}
+
+	return []notifier.Suggestion{{
+		Category:   "insight",
+		Confidence: notifier.ConfidenceModerate,
+		Title:      "AI query category trend",
+		Body: fmt.Sprintf(
+			"Most of your AI queries are about %s (%d%% of recent queries).",
+			topCat, pct,
+		),
+	}}, nil
+}
+
+// checkSuggestionAcceptanceTrend checks the suggestion acceptance rate and emits
+// a positive reinforcement or adjustment suggestion.
+func (d *Detector) checkSuggestionAcceptanceTrend(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	rate, err := d.store.QuerySuggestionAcceptanceRate(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: suggestion_acceptance_trend: %w", err)
+	}
+
+	if rate >= 0.7 {
+		return []notifier.Suggestion{{
+			Category:   "insight",
+			Confidence: notifier.ConfidenceWeak,
+			Title:      "High suggestion acceptance",
+			Body: fmt.Sprintf(
+				"You're accepting %.0f%% of suggestions — the system is well-tuned to your workflow.",
+				rate*100,
+			),
+		}}, nil
+	}
+
+	if rate < 0.3 {
+		resolved, err := d.store.QueryResolvedSuggestionCount(ctx, since)
+		if err != nil {
+			return nil, fmt.Errorf("patterns: suggestion_acceptance_trend: count: %w", err)
+		}
+		if resolved >= 10 {
+			return []notifier.Suggestion{{
+				Category:   "insight",
+				Confidence: notifier.ConfidenceWeak,
+				Title:      "Low suggestion acceptance",
+				Body: fmt.Sprintf(
+					"Only %.0f%% of suggestions accepted — consider adjusting your notification level.",
+					rate*100,
+				),
+			}}, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // --- Payload helpers -------------------------------------------------------

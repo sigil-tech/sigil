@@ -7,6 +7,7 @@ import (
 
 	"github.com/wambozi/aether/internal/event"
 	"github.com/wambozi/aether/internal/notifier"
+	"github.com/wambozi/aether/internal/store"
 )
 
 // insertFile inserts a file event with the given path and timestamp.
@@ -251,6 +252,251 @@ func TestDetector_TimeOfDay_peakHour_suggestionReturned(t *testing.T) {
 
 	if !hasSuggestionWithTitle(t, suggestions, "Productive hour identified") {
 		t.Errorf("expected time-of-day suggestion; got %+v", suggestions)
+	}
+}
+
+// --- DayOfWeekProductivity --------------------------------------------------
+
+func TestDetector_DayOfWeekProductivity_peakDay_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// Use fixed dates: Monday gets 12 edits, Tuesday gets 5.
+	// Peak (12) >= 2x trough (5) and peak >= 10.
+	monday := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)    // Monday
+	tuesday := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)   // Tuesday
+
+	for i := range 12 {
+		insertFile(t, ctx, db, "/proj/main.go", monday.Add(time.Duration(i)*time.Minute))
+	}
+	for i := range 5 {
+		insertFile(t, ctx, db, "/proj/main.go", tuesday.Add(time.Duration(i)*time.Minute))
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkDayOfWeekProductivity(ctx, monday.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkDayOfWeekProductivity: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "Day-of-week productivity pattern") {
+		t.Errorf("expected day-of-week suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_DayOfWeekProductivity_belowThreshold_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// Both days have similar counts — no 2x difference.
+	monday := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)
+	tuesday := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)
+
+	for i := range 6 {
+		insertFile(t, ctx, db, "/proj/main.go", monday.Add(time.Duration(i)*time.Minute))
+	}
+	for i := range 5 {
+		insertFile(t, ctx, db, "/proj/main.go", tuesday.Add(time.Duration(i)*time.Minute))
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkDayOfWeekProductivity(ctx, monday.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkDayOfWeekProductivity: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "Day-of-week productivity pattern") {
+		t.Error("expected no day-of-week suggestion when peak is not 2x trough")
+	}
+}
+
+// --- SessionLength ----------------------------------------------------------
+
+func TestDetector_SessionLength_longSessions_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// Create 3 sessions of ~90 minutes each, separated by 3-hour gaps.
+	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	for session := 0; session < 3; session++ {
+		sessionStart := base.Add(time.Duration(session) * 6 * time.Hour)
+		for i := 0; i < 10; i++ {
+			insertTerminal(t, ctx, db, "vim main.go", 0, "/proj",
+				sessionStart.Add(time.Duration(i)*9*time.Minute))
+		}
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkSessionLength(ctx, base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkSessionLength: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "Long coding sessions") {
+		t.Errorf("expected session length suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_SessionLength_shortSessions_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// Create 3 sessions of ~30 minutes each.
+	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	for session := 0; session < 3; session++ {
+		sessionStart := base.Add(time.Duration(session) * 4 * time.Hour)
+		for i := 0; i < 4; i++ {
+			insertTerminal(t, ctx, db, "vim main.go", 0, "/proj",
+				sessionStart.Add(time.Duration(i)*10*time.Minute))
+		}
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkSessionLength(ctx, base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkSessionLength: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "Long coding sessions") {
+		t.Error("expected no session length suggestion for short sessions")
+	}
+}
+
+// --- AIQueryCategoryTrends --------------------------------------------------
+
+func insertAIInteraction(t *testing.T, ctx context.Context, db interface {
+	InsertAIInteraction(context.Context, event.AIInteraction) error
+}, category string, ts time.Time) {
+	t.Helper()
+	if err := db.InsertAIInteraction(ctx, event.AIInteraction{
+		QueryText:     "test query",
+		QueryCategory: category,
+		Routing:       "local",
+		LatencyMS:     100,
+		Timestamp:     ts,
+	}); err != nil {
+		t.Fatalf("insertAIInteraction %s: %v", category, err)
+	}
+}
+
+func TestDetector_AIQueryCategoryTrends_dominantCategory_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// 4 "debug" queries + 1 "code_gen" = 5 total, debug is 80%.
+	for i := range 4 {
+		insertAIInteraction(t, ctx, db, "debug", now.Add(-time.Duration(i+1)*time.Minute))
+	}
+	insertAIInteraction(t, ctx, db, "code_gen", now.Add(-6*time.Minute))
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkAIQueryCategoryTrends(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkAIQueryCategoryTrends: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "AI query category trend") {
+		t.Errorf("expected AI category trend suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_AIQueryCategoryTrends_noCategory_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Only 3 interactions — below the 5 minimum.
+	for i := range 3 {
+		insertAIInteraction(t, ctx, db, "debug", now.Add(-time.Duration(i+1)*time.Minute))
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkAIQueryCategoryTrends(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkAIQueryCategoryTrends: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "AI query category trend") {
+		t.Error("expected no suggestion with < 5 interactions")
+	}
+}
+
+// --- SuggestionAcceptanceTrend ----------------------------------------------
+
+func TestDetector_SuggestionAcceptanceTrend_highRate_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Insert 8 accepted and 2 dismissed suggestions (80% acceptance).
+	for i := range 8 {
+		id, err := db.InsertSuggestion(ctx, store.Suggestion{
+			Category: "pattern", Confidence: 0.7, Title: "test", Body: "test",
+			CreatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = db.UpdateSuggestionStatus(ctx, id, store.StatusAccepted)
+	}
+	for i := range 2 {
+		id, err := db.InsertSuggestion(ctx, store.Suggestion{
+			Category: "pattern", Confidence: 0.7, Title: "test", Body: "test",
+			CreatedAt: now.Add(-time.Duration(i+9) * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = db.UpdateSuggestionStatus(ctx, id, store.StatusDismissed)
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkSuggestionAcceptanceTrend(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkSuggestionAcceptanceTrend: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "High suggestion acceptance") {
+		t.Errorf("expected high acceptance suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_SuggestionAcceptanceTrend_lowRate_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Insert 2 accepted and 9 dismissed (18% acceptance, 11 resolved >= 10).
+	for i := range 2 {
+		id, err := db.InsertSuggestion(ctx, store.Suggestion{
+			Category: "pattern", Confidence: 0.7, Title: "test", Body: "test",
+			CreatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = db.UpdateSuggestionStatus(ctx, id, store.StatusAccepted)
+	}
+	for i := range 9 {
+		id, err := db.InsertSuggestion(ctx, store.Suggestion{
+			Category: "pattern", Confidence: 0.7, Title: "test", Body: "test",
+			CreatedAt: now.Add(-time.Duration(i+3) * time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = db.UpdateSuggestionStatus(ctx, id, store.StatusDismissed)
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkSuggestionAcceptanceTrend(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkSuggestionAcceptanceTrend: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "Low suggestion acceptance") {
+		t.Errorf("expected low acceptance suggestion; got %+v", suggestions)
 	}
 }
 
