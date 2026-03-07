@@ -222,22 +222,18 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	srv := socket.New(cfg.socketPath, log)
 	registerHandlers(srv, db, cactusClient, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, cfg)
 
-	// Wire suggestion push to socket subscribers: wrap OnSummary so every
-	// suggestion produced by an analysis cycle is also fanned out to any
-	// connections that subscribed to the "suggestions" topic.
-	originalOnSummary := anlz.OnSummary
-	anlz.OnSummary = func(s analyzer.Summary) {
-		if originalOnSummary != nil {
-			originalOnSummary(s)
-		}
-		for _, sg := range s.Suggestions {
-			payload := socket.MarshalPayload(map[string]any{
-				"id":         fmt.Sprintf("sg-%d-%d", int(sg.Confidence*1000), time.Now().UnixNano()),
-				"text":       sg.Body,
-				"confidence": sg.Confidence,
-			})
-			srv.Notify("suggestions", payload)
-		}
+	// Wire suggestion push via the notifier's OnSuggestion callback.
+	// Every suggestion that passes the confidence gate is fanned out to any
+	// socket connections subscribed to the "suggestions" topic.
+	ntf.OnSuggestion = func(id int64, sg notifier.Suggestion) {
+		payload := socket.MarshalPayload(map[string]any{
+			"id":         id,
+			"text":       sg.Body,
+			"title":      sg.Title,
+			"confidence": sg.Confidence,
+			"action_cmd": sg.ActionCmd,
+		})
+		srv.Notify("suggestions", payload)
 	}
 
 	if err := srv.Start(ctx); err != nil {

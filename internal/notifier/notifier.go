@@ -78,6 +78,11 @@ type Notifier struct {
 	// lastShownAt tracks the last time a notification was displayed at each
 	// level for rate-limiting purposes.
 	lastShownAt map[Level]time.Time
+
+	// OnSuggestion, if set, is called after every suggestion that passes the
+	// confidence gate (>= ConfidenceModerate). It receives the store-assigned
+	// ID and the suggestion. Must be non-blocking.
+	OnSuggestion func(id int64, sg Suggestion)
 }
 
 // New creates a Notifier at the given level.
@@ -125,6 +130,11 @@ func (n *Notifier) Surface(sg Suggestion) {
 	if err != nil {
 		n.log.Warn("notifier: persist suggestion", "err", err)
 		// Non-fatal — still attempt to display if possible.
+	}
+
+	// Fire the push callback for suggestions that pass the confidence gate.
+	if err == nil && sg.Confidence >= ConfidenceModerate && n.OnSuggestion != nil {
+		n.OnSuggestion(id, sg)
 	}
 
 	n.mu.RLock()
