@@ -104,9 +104,15 @@ func (a *Analyzer) runCycle(ctx context.Context) {
 		return
 	}
 
-	// Cloud pass — send a context digest to Cactus.
+	// Cloud pass — ping Cactus before each attempt so the daemon reconnects
+	// automatically if Cactus was unavailable at startup or went down briefly.
 	if a.cactus != nil {
-		if err := a.cloudPass(ctx, &summary); err != nil {
+		pingCtx, cancelPing := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := a.cactus.Ping(pingCtx)
+		cancelPing()
+		if pingErr != nil {
+			a.log.Warn("analyzer: cactus unreachable — skipping cloud pass", "err", pingErr)
+		} else if err := a.cloudPass(ctx, &summary); err != nil {
 			// Non-fatal: local summary is still useful without LLM enrichment.
 			a.log.Warn("analyzer: cloud pass", "err", err)
 		}

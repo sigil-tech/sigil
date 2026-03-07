@@ -160,10 +160,9 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	if err := cactusClient.Ping(pingCtx); err != nil {
-		log.Warn("cactus unreachable at startup — analysis will run local-only until it comes up",
+		log.Warn("cactus unreachable at startup — will retry before each cloud pass",
 			"url", cfg.cactusURL, "err", err)
-		// Non-fatal: the daemon is still useful without Cactus.
-		cactusClient = nil
+		// Non-fatal: keep the client so the analyzer can retry on each cycle.
 	} else {
 		log.Info("cactus reachable", "url", cfg.cactusURL, "routing", cfg.cactusRoute)
 	}
