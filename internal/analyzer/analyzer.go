@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/wambozi/aether/internal/cactus"
@@ -25,10 +26,16 @@ import (
 type Summary struct {
 	Period        time.Duration
 	EventCounts   map[event.Kind]int64
-	TopFiles      []string
+	TopFiles      []store.FileEditCount
 	Insights      string // LLM-generated narrative (may be empty)
 	CactusRouting string // "local" | "cloud" | "" (not yet queried)
 	GeneratedAt   time.Time
+
+	// AcceptanceRate is the ratio of accepted/(accepted+dismissed) suggestions.
+	AcceptanceRate float64
+
+	// AIInteractions holds the last 20 AI interaction records in the window.
+	AIInteractions []event.AIInteraction
 
 	// Suggestions are pattern-based insights produced by the local heuristic
 	// detector.  Callers should surface each one via notifier.Surface.
@@ -155,6 +162,32 @@ func (a *Analyzer) localPass(ctx context.Context) (Summary, error) {
 	}
 	summary.Suggestions = suggestions
 
+	// Populate enrichment fields for the LLM prompt.
+	topFiles, err := a.store.QueryTopFiles(ctx, since, 5)
+	if err != nil {
+		a.log.Warn("analyzer: query top files", "err", err)
+	} else {
+		summary.TopFiles = topFiles
+	}
+
+	rate, err := a.store.QuerySuggestionAcceptanceRate(ctx, since)
+	if err != nil {
+		a.log.Warn("analyzer: query acceptance rate", "err", err)
+	} else {
+		summary.AcceptanceRate = rate
+	}
+
+	aiInteractions, err := a.store.QueryAIInteractions(ctx, since)
+	if err != nil {
+		a.log.Warn("analyzer: query AI interactions", "err", err)
+	} else {
+		// Keep only the last 20.
+		if len(aiInteractions) > 20 {
+			aiInteractions = aiInteractions[len(aiInteractions)-20:]
+		}
+		summary.AIInteractions = aiInteractions
+	}
+
 	return summary, nil
 }
 
@@ -195,20 +228,122 @@ anything that looks like the engineer might be blocked or struggling. Be concise
 file paths or commands — only infer from the data given.`
 
 // buildPrompt converts a local Summary into a text prompt for the LLM.
+// Stays under 7500 characters; truncates patterns and files if needed.
 func buildPrompt(s *Summary) string {
-	return fmt.Sprintf(
-		"Workflow summary for the past %s:\n"+
-			"- File system events: %d\n"+
-			"- Process events: %d\n"+
-			"- Git events: %d\n"+
-			"- Hyprland (window/workspace) events: %d\n"+
-			"- AI interaction events: %d\n\n"+
-			"What patterns do you notice? What might help this engineer?",
-		s.Period,
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Workflow summary for the past %s:\n", s.Period)
+	fmt.Fprintf(&b, "Events: %d file, %d process, %d git, %d terminal, %d AI interactions\n",
 		s.EventCounts[event.KindFile],
 		s.EventCounts[event.KindProcess],
 		s.EventCounts[event.KindGit],
-		s.EventCounts[event.KindHyprland],
+		s.EventCounts[event.KindTerminal],
 		s.EventCounts[event.KindAI],
 	)
+
+	// Top edited files.
+	files := s.TopFiles
+	if len(files) > 0 {
+		b.WriteString("\nTop edited files: ")
+		for i, f := range files {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s (%d edits)", f.Path, f.Count)
+		}
+		b.WriteString("\n")
+	}
+
+	// Detected patterns.
+	suggestions := s.Suggestions
+	if len(suggestions) > 0 {
+		b.WriteString("\nDetected patterns:\n")
+		for _, sg := range suggestions {
+			fmt.Fprintf(&b, "- %s: %s\n", sg.Title, sg.Body)
+		}
+	}
+
+	// AI usage summary.
+	if len(s.AIInteractions) > 0 {
+		catCounts := make(map[string]int)
+		for _, ai := range s.AIInteractions {
+			if ai.QueryCategory != "" {
+				catCounts[ai.QueryCategory]++
+			}
+		}
+		topCat := ""
+		topN := 0
+		for cat, n := range catCounts {
+			if n > topN {
+				topN = n
+				topCat = cat
+			}
+		}
+		fmt.Fprintf(&b, "\nAI usage: %d queries in this window, %.0f%% suggestion acceptance rate.",
+			len(s.AIInteractions), s.AcceptanceRate*100)
+		if topCat != "" {
+			fmt.Fprintf(&b, "\nMost common query category: %s.", topCat)
+		}
+		b.WriteString("\n")
+	}
+
+	// Build health from terminal events in suggestions.
+	var buildCmds, buildSuccesses int
+	for _, sg := range suggestions {
+		if strings.Contains(sg.Title, "build/test failures") {
+			buildCmds++
+		}
+	}
+	if buildCmds > 0 || s.EventCounts[event.KindTerminal] > 0 {
+		fmt.Fprintf(&b, "\nBuild health: %d terminal events observed.\n",
+			s.EventCounts[event.KindTerminal])
+		_ = buildSuccesses // detailed build stats require terminal event scan
+	}
+
+	b.WriteString("\nWhat patterns do you notice? What might help this engineer?")
+
+	prompt := b.String()
+
+	// Token guard: truncate if over 7500 characters.
+	if len(prompt) > 7500 {
+		b.Reset()
+		fmt.Fprintf(&b, "Workflow summary for the past %s:\n", s.Period)
+		fmt.Fprintf(&b, "Events: %d file, %d process, %d git, %d terminal, %d AI interactions\n",
+			s.EventCounts[event.KindFile],
+			s.EventCounts[event.KindProcess],
+			s.EventCounts[event.KindGit],
+			s.EventCounts[event.KindTerminal],
+			s.EventCounts[event.KindAI],
+		)
+
+		if len(files) > 3 {
+			files = files[:3]
+		}
+		if len(files) > 0 {
+			b.WriteString("\nTop edited files: ")
+			for i, f := range files {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s (%d edits)", f.Path, f.Count)
+			}
+			b.WriteString("\n")
+		}
+
+		truncSuggestions := suggestions
+		if len(truncSuggestions) > 3 {
+			truncSuggestions = truncSuggestions[:3]
+		}
+		if len(truncSuggestions) > 0 {
+			b.WriteString("\nDetected patterns:\n")
+			for _, sg := range truncSuggestions {
+				fmt.Fprintf(&b, "- %s: %s\n", sg.Title, sg.Body)
+			}
+		}
+
+		b.WriteString("\nWhat patterns do you notice? What might help this engineer?")
+		prompt = b.String()
+	}
+
+	return prompt
 }
