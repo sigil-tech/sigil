@@ -220,7 +220,25 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, cfg)
+	registerHandlers(srv, db, cactusClient, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, cfg)
+
+	// Wire suggestion push to socket subscribers: wrap OnSummary so every
+	// suggestion produced by an analysis cycle is also fanned out to any
+	// connections that subscribed to the "suggestions" topic.
+	originalOnSummary := anlz.OnSummary
+	anlz.OnSummary = func(s analyzer.Summary) {
+		if originalOnSummary != nil {
+			originalOnSummary(s)
+		}
+		for _, sg := range s.Suggestions {
+			payload := socket.MarshalPayload(map[string]any{
+				"id":         fmt.Sprintf("sg-%d-%d", int(sg.Confidence*1000), time.Now().UnixNano()),
+				"text":       sg.Body,
+				"confidence": sg.Confidence,
+			})
+			srv.Notify("suggestions", payload)
+		}
+	}
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -274,6 +292,7 @@ func drainWithTimeoutAndExit(log *slog.Logger, timeout time.Duration, drainFn fu
 func registerHandlers(
 	srv *socket.Server,
 	db *store.Store,
+	cactusClient *cactus.Client,
 	ntf *notifier.Notifier,
 	anlz *analyzer.Analyzer,
 	terminalSrc *sources.TerminalSource,
@@ -511,20 +530,68 @@ func registerHandlers(
 	// Sensitive fields (API keys / tokens) are masked with "***".
 	srv.Handle("config", func(ctx context.Context, _ socket.Request) socket.Response {
 		payload := map[string]any{
-			"db_path":          cfg.dbPath,
-			"socket_path":      cfg.socketPath,
-			"cactus_url":       cfg.cactusURL,
-			"cactus_model":     cfg.cactusModel,
-			"cactus_route":     cfg.cactusRoute,
-			"watch_paths":      cfg.watchPaths,
-			"repo_paths":       cfg.repoPaths,
-			"analyze_every":    cfg.analyzeEvery.String(),
-			"notifier_level":   cfg.notifierLevel,
-			"log_level":        cfg.logLevel,
-			"digest_time":      cfg.digestTime,
-			"raw_event_days":   cfg.fileCfg.Retention.RawEventDays,
+			"db_path":        cfg.dbPath,
+			"socket_path":    cfg.socketPath,
+			"cactus_url":     cfg.cactusURL,
+			"cactus_model":   cfg.cactusModel,
+			"cactus_route":   cfg.cactusRoute,
+			"watch_paths":    cfg.watchPaths,
+			"repo_paths":     cfg.repoPaths,
+			"analyze_every":  cfg.analyzeEvery.String(),
+			"notifier_level": cfg.notifierLevel,
+			"log_level":      cfg.logLevel,
+			"digest_time":    cfg.digestTime,
+			"raw_event_days": cfg.fileCfg.Retention.RawEventDays,
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(payload)}
+	})
+
+	// ai-query — routes a natural-language query through Cactus and logs the
+	// interaction for fleet metrics.
+	// Request:  {"method":"ai-query","payload":{"query":"...","context":"..."}}
+	// Response: {"ok":true,"payload":{"response":"...","routing":"local|cloud","latency_ms":120}}
+	srv.Handle("ai-query", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Query   string `json:"query"`
+			Context string `json:"context"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if strings.TrimSpace(p.Query) == "" {
+			return socket.Response{Error: "query is required"}
+		}
+
+		result, err := cactusClient.Complete(ctx, "You are a developer workflow assistant.", p.Query)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("cactus: %s", err)}
+		}
+
+		_ = db.InsertAIInteraction(ctx, event.AIInteraction{
+			QueryText:     p.Query,
+			QueryCategory: p.Context,
+			Routing:       result.Routing,
+			LatencyMS:     result.LatencyMS,
+			Timestamp:     time.Now(),
+		})
+
+		return socket.Response{
+			OK: true,
+			Payload: socket.MarshalPayload(map[string]any{
+				"response":   result.Content,
+				"routing":    result.Routing,
+				"latency_ms": result.LatencyMS,
+			}),
+		}
+	})
+
+	// purge — deletes all stored data and removes the database file.
+	// Intended for privacy workflows; the daemon must be restarted afterward.
+	srv.Handle("purge", func(ctx context.Context, _ socket.Request) socket.Response {
+		if err := db.Purge(); err != nil {
+			return socket.Response{Error: fmt.Sprintf("purge: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
 }
 
