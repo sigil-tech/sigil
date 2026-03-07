@@ -1,0 +1,13 @@
+[Unit]
+Description=Aether daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/aetherd
+Restart=on-failure
+RestartSec=5
+MemoryMax=150M
+
+[Install]
+WantedBy=default.target
