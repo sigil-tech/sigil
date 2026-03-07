@@ -501,13 +501,41 @@ func cmdConfig(socketPath string) error {
 	return w.Flush()
 }
 
-// cmdPurge and cmdExport are implemented in issue #21.
-func cmdPurge(_ string) error {
-	return fmt.Errorf("purge not yet implemented — see issue #21")
+// cmdPurge prompts for confirmation and deletes all local data directly from
+// SQLite (works without a running daemon).
+func cmdPurge(dbPath string) error {
+	fmt.Fprint(os.Stdout, "This will delete all local data. Type 'yes' to confirm: ")
+	var answer string
+	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+	if answer != "yes" {
+		fmt.Println("Aborted.")
+		return nil
+	}
+
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+
+	if err := db.Purge(); err != nil {
+		return fmt.Errorf("purge: %w", err)
+	}
+	fmt.Println("All local data deleted.")
+	return nil
 }
 
-func cmdExport(_ string) error {
-	return fmt.Errorf("export not yet implemented — see issue #21")
+// cmdExport writes all events and suggestions as newline-delimited JSON to
+// stdout.  Works without a running daemon (direct DB access).
+func cmdExport(dbPath string) error {
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer db.Close()
+
+	return db.Export(os.Stdout)
 }
 
 func printUsage() {
