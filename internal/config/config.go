@@ -24,11 +24,20 @@ type Config struct {
 
 // DaemonConfig covers process-level settings.
 type DaemonConfig struct {
-	LogLevel   string   `toml:"log_level"`
-	WatchDirs  []string `toml:"watch_dirs"`
-	RepoDirs   []string `toml:"repo_dirs"`
-	DBPath     string   `toml:"db_path"`
-	SocketPath string   `toml:"socket_path"`
+	LogLevel          string   `toml:"log_level"`
+	WatchDirs         []string `toml:"watch_dirs"`
+	RepoDirs          []string `toml:"repo_dirs"`
+	DBPath            string   `toml:"db_path"`
+	SocketPath        string   `toml:"socket_path"`
+	ActuationsEnabled *bool    `toml:"actuations_enabled"` // nil = default true
+}
+
+// IsActuationsEnabled returns whether actuations are enabled (defaults to true).
+func (d DaemonConfig) IsActuationsEnabled() bool {
+	if d.ActuationsEnabled == nil {
+		return true
+	}
+	return *d.ActuationsEnabled
 }
 
 // NotifierConfig controls how suggestions are surfaced.
