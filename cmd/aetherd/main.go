@@ -219,9 +219,13 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// --- Daily digest scheduler ---------------------------------------------
 	nextDigest := scheduleDigest(ctx, cfg.digestTime, ntf, log)
 
+	// --- Keybinding profile tracking ----------------------------------------
+	var currentProfile atomic.Value
+	currentProfile.Store("terminal") // default profile
+
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, cactusClient, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, cfg)
+	registerHandlers(srv, db, cactusClient, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg)
 
 	// Wire suggestion push via the notifier's OnSuggestion callback.
 	// Every suggestion that passes the confidence gate is fanned out to any
@@ -324,15 +328,17 @@ func registerHandlers(
 	log *slog.Logger,
 	rssMB *atomic.Int64,
 	nextDigest *atomic.Int64,
+	currentProfile *atomic.Value,
 	cfg daemonConfig,
 ) {
 	// status — quick health check for aetherctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
 		payload := map[string]any{
-			"status":         "ok",
-			"version":        "0.1.0-dev",
-			"notifier_level": int(ntf.Level()),
-			"rss_mb":         rssMB.Load(),
+			"status":                     "ok",
+			"version":                    "0.1.0-dev",
+			"notifier_level":             int(ntf.Level()),
+			"rss_mb":                     rssMB.Load(),
+			"current_keybinding_profile": currentProfile.Load(),
 		}
 		if ntf.Level() == notifier.LevelDigest {
 			if ns := nextDigest.Load(); ns > 0 {
@@ -617,6 +623,28 @@ func registerHandlers(
 			return socket.Response{Error: fmt.Sprintf("purge: %s", err)}
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
+	})
+
+	// view-changed — called by the shell when the active tool view changes.
+	// Updates the keybinding profile and pushes an actuation event.
+	srv.Handle("view-changed", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			View string `json:"view"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload"}
+		}
+		if p.View == "" {
+			return socket.Response{Error: "view is required"}
+		}
+		currentProfile.Store(p.View)
+		payload := socket.MarshalPayload(map[string]any{
+			"type":    "keybinding-profile",
+			"profile": p.View,
+		})
+		srv.Notify("actuations", payload)
+		log.Info("keybinding profile changed", "profile", p.View)
+		return socket.Response{OK: true}
 	})
 }
 
