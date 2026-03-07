@@ -40,6 +40,13 @@ const (
 	ConfidenceVeryStrong = 0.9 // 25+ — eligible for LevelAutonomous auto-execute
 )
 
+// Rate-limiting constants — prevent notification floods when the analyzer
+// produces a burst of suggestions.
+const (
+	ambientMinInterval       = 15 * time.Minute
+	conversationalMinInterval = 5 * time.Minute
+)
+
 // Suggestion is a single insight ready to be surfaced.  It mirrors
 // store.Suggestion but lives here to decouple callers from the store package.
 type Suggestion struct {
@@ -67,15 +74,20 @@ type Notifier struct {
 
 	// digestQueue accumulates suggestions for the daily digest (Level 1).
 	digestQueue []Suggestion
+
+	// lastShownAt tracks the last time a notification was displayed at each
+	// level for rate-limiting purposes.
+	lastShownAt map[Level]time.Time
 }
 
 // New creates a Notifier at the given level.
 func New(s *store.Store, level Level, log *slog.Logger) *Notifier {
 	return &Notifier{
-		level:    level,
-		store:    s,
-		platform: newPlatform(log),
-		log:      log,
+		level:       level,
+		store:       s,
+		platform:    newPlatform(log),
+		log:         log,
+		lastShownAt: make(map[Level]time.Time),
 	}
 }
 
@@ -132,9 +144,19 @@ func (n *Notifier) Surface(sg Suggestion) {
 		if sg.Confidence < ConfidenceModerate {
 			return // not confident enough to interrupt
 		}
+		if !n.checkRateLimit(LevelAmbient, ambientMinInterval) {
+			n.log.Debug("notifier: ambient rate limit suppressed notification",
+				"title", sg.Title)
+			return
+		}
 		go n.show(id, sg, false)
 
 	case LevelConversational:
+		if !n.checkRateLimit(LevelConversational, conversationalMinInterval) {
+			n.log.Debug("notifier: conversational rate limit suppressed notification",
+				"title", sg.Title)
+			return
+		}
 		go n.show(id, sg, sg.ActionCmd != "")
 
 	case LevelAutonomous:
@@ -144,6 +166,20 @@ func (n *Notifier) Surface(sg Suggestion) {
 			go n.show(id, sg, sg.ActionCmd != "")
 		}
 	}
+}
+
+// checkRateLimit returns true if enough time has passed since the last shown
+// notification at this level, and records the current time if so.
+// Thread-safe: acquires the write lock internally.
+func (n *Notifier) checkRateLimit(level Level, minInterval time.Duration) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	last := n.lastShownAt[level]
+	if !last.IsZero() && time.Since(last) < minInterval {
+		return false
+	}
+	n.lastShownAt[level] = time.Now()
+	return true
 }
 
 // FlushDigest surfaces all queued digest suggestions as a single notification.
