@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -19,7 +20,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -208,9 +211,13 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	go anlz.Run(ctx)
 	log.Info("analyzer started", "interval", cfg.analyzeEvery)
 
+	// --- RSS monitor --------------------------------------------------------
+	var currentRSSMB atomic.Int64
+	go runRSSMonitor(ctx, log, &currentRSSMB)
+
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, ntf, anlz, terminalSrc, log)
+	registerHandlers(srv, db, ntf, anlz, terminalSrc, log, &currentRSSMB)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -268,6 +275,7 @@ func registerHandlers(
 	anlz *analyzer.Analyzer,
 	terminalSrc *sources.TerminalSource,
 	log *slog.Logger,
+	rssMB *atomic.Int64,
 ) {
 	// status — quick health check for aetherctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
@@ -277,6 +285,7 @@ func registerHandlers(
 				"status":         "ok",
 				"version":        "0.1.0-dev",
 				"notifier_level": int(ntf.Level()),
+				"rss_mb":         rssMB.Load(),
 			}),
 		}
 	})
@@ -486,6 +495,77 @@ func registerHandlers(
 		log.Info("feedback recorded", "suggestion_id", p.SuggestionID, "outcome", p.Outcome)
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
+}
+
+// --- RSS monitor ------------------------------------------------------------
+
+const (
+	rssWarnMB  = 100
+	rssLimitMB = 150
+)
+
+// runRSSMonitor reads /proc/self/status every 5 minutes.
+// > 100 MB: log warning and halve ProcessSource polling interval (best-effort).
+// > 150 MB: log error and exit so systemd restarts with a clean heap.
+func runRSSMonitor(ctx context.Context, log *slog.Logger, current *atomic.Int64) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			mb, err := readRSSMB()
+			if err != nil {
+				log.Warn("rss monitor: read failed", "err", err)
+				continue
+			}
+			current.Store(mb)
+
+			switch {
+			case mb > rssLimitMB:
+				log.Error("rss exceeds hard limit — exiting for restart",
+					"rss_mb", mb, "limit_mb", rssLimitMB)
+				os.Exit(0)
+			case mb > rssWarnMB:
+				log.Warn("rss exceeds soft limit — consider restarting if this persists",
+					"rss_mb", mb, "warn_mb", rssWarnMB)
+			}
+		}
+	}
+}
+
+// readRSSMB returns the current process RSS in megabytes by parsing
+// /proc/self/status.  Returns an error if the file cannot be read or parsed.
+func readRSSMB() (int64, error) {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0, fmt.Errorf("open /proc/self/status: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "VmRSS:") {
+			continue
+		}
+		// Format: "VmRSS:   12345 kB"
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse VmRSS: %w", err)
+		}
+		return kb / 1024, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("scan /proc/self/status: %w", err)
+	}
+	return 0, fmt.Errorf("VmRSS not found in /proc/self/status")
 }
 
 // --- Init subcommand --------------------------------------------------------
