@@ -220,7 +220,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest)
+	registerHandlers(srv, db, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, cfg)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -280,6 +280,7 @@ func registerHandlers(
 	log *slog.Logger,
 	rssMB *atomic.Int64,
 	nextDigest *atomic.Int64,
+	cfg daemonConfig,
 ) {
 	// status — quick health check for aetherctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
@@ -504,6 +505,26 @@ func registerHandlers(
 
 		log.Info("feedback recorded", "suggestion_id", p.SuggestionID, "outcome", p.Outcome)
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
+	})
+
+	// config — return the resolved runtime configuration as JSON.
+	// Sensitive fields (API keys / tokens) are masked with "***".
+	srv.Handle("config", func(ctx context.Context, _ socket.Request) socket.Response {
+		payload := map[string]any{
+			"db_path":          cfg.dbPath,
+			"socket_path":      cfg.socketPath,
+			"cactus_url":       cfg.cactusURL,
+			"cactus_model":     cfg.cactusModel,
+			"cactus_route":     cfg.cactusRoute,
+			"watch_paths":      cfg.watchPaths,
+			"repo_paths":       cfg.repoPaths,
+			"analyze_every":    cfg.analyzeEvery.String(),
+			"notifier_level":   cfg.notifierLevel,
+			"log_level":        cfg.logLevel,
+			"digest_time":      cfg.digestTime,
+			"raw_event_days":   cfg.fileCfg.Retention.RawEventDays,
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(payload)}
 	})
 }
 
