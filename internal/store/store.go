@@ -440,6 +440,71 @@ func (s *Store) QueryResolvedSuggestionCount(ctx context.Context, since time.Tim
 	return count, err
 }
 
+// --- Action log ------------------------------------------------------------
+
+// ActionRecord is a stored action from the action_log table.
+type ActionRecord struct {
+	ID          string     `json:"id"`
+	Description string     `json:"description"`
+	ExecuteCmd  string     `json:"execute_cmd,omitempty"`
+	UndoCmd     string     `json:"undo_cmd,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UndoneAt    *time.Time `json:"undone_at,omitempty"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+}
+
+// InsertAction persists an actuator action to the action log.
+func (s *Store) InsertAction(ctx context.Context, actionID, description, executeCmd, undoCmd string, createdAt, expiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO action_log (action_id, description, execute_cmd, undo_cmd, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		actionID, description, executeCmd, undoCmd, createdAt.UnixMilli(), expiresAt.UnixMilli(),
+	)
+	return err
+}
+
+// QueryUndoableActions returns actions whose undo window has not expired and
+// that have not been undone yet, ordered by created_at ascending.
+func (s *Store) QueryUndoableActions(ctx context.Context) ([]ActionRecord, error) {
+	now := time.Now().UnixMilli()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT action_id, description, execute_cmd, undo_cmd, created_at, expires_at
+		 FROM action_log
+		 WHERE expires_at > ? AND undone_at IS NULL
+		 ORDER BY created_at ASC`,
+		now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query undoable actions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ActionRecord
+	for rows.Next() {
+		var (
+			a           ActionRecord
+			createdAtMS int64
+			expiresAtMS int64
+		)
+		if err := rows.Scan(&a.ID, &a.Description, &a.ExecuteCmd, &a.UndoCmd, &createdAtMS, &expiresAtMS); err != nil {
+			return nil, fmt.Errorf("store: scan action record: %w", err)
+		}
+		a.CreatedAt = time.UnixMilli(createdAtMS)
+		a.ExpiresAt = time.UnixMilli(expiresAtMS)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// MarkActionUndone sets the undone_at timestamp for the given action.
+func (s *Store) MarkActionUndone(ctx context.Context, actionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE action_log SET undone_at = ? WHERE action_id = ?`,
+		time.Now().UnixMilli(), actionID,
+	)
+	return err
+}
+
 // --- Feedback --------------------------------------------------------------
 
 // InsertFeedback records the outcome of a surfaced suggestion.
@@ -506,7 +571,19 @@ CREATE TABLE IF NOT EXISTS feedback (
     suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
     outcome       TEXT    NOT NULL,
     ts            INTEGER NOT NULL
-);`
+);
+
+CREATE TABLE IF NOT EXISTS action_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id   TEXT    NOT NULL UNIQUE,
+    description TEXT    NOT NULL,
+    execute_cmd TEXT    NOT NULL DEFAULT '',
+    undo_cmd    TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    undone_at   INTEGER,
+    expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log (created_at);`
 
 	_, err := db.Exec(schema)
 	return err
