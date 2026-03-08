@@ -40,9 +40,12 @@ func main() {
 	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	h.registerPolicyRoutes(mux)
 
+	authCfg := loadAuthConfig()
+	handler := jwtMiddleware(authCfg, cfg.APIKey, log, mux)
+
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

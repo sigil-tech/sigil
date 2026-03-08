@@ -3,11 +3,18 @@ import { AdoptionView } from "./views/AdoptionView";
 import { VelocityView } from "./views/VelocityView";
 import { CostView } from "./views/CostView";
 import { ComplianceView } from "./views/ComplianceView";
+import { AuthProvider, useAuth } from "./auth/AuthProvider";
+import { Login } from "./auth/Login";
 
 type View = "adoption" | "velocity" | "cost" | "compliance";
 
-export function App() {
+function Dashboard() {
+  const { user, logout } = useAuth();
   const [view, setView] = useState<View>("adoption");
+
+  if (!user) {
+    return <Login />;
+  }
 
   return (
     <div>
@@ -26,6 +33,7 @@ export function App() {
           <button onClick={() => setView("compliance")} class={view === "compliance" ? "active" : ""}>
             Compliance
           </button>
+          <button onClick={logout}>Sign Out</button>
         </nav>
       </header>
       <main>
@@ -35,5 +43,13 @@ export function App() {
         {view === "compliance" && <ComplianceView />}
       </main>
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <AuthProvider>
+      <Dashboard />
+    </AuthProvider>
   );
 }
