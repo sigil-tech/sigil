@@ -92,6 +92,9 @@ func parseFlags() daemonConfig {
 	// Reset flags so we can define them with file-sourced defaults.
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
+	// Re-define -config so the second parse doesn't fail on it.
+	_ = flag.String("config", *cfgPath, "Path to TOML config file")
+
 	dbDefault := fileCfg.Daemon.DBPath
 	if dbDefault == "" {
 		dbDefault = defaultDBPath()
