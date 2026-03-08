@@ -2,8 +2,9 @@ import { useState } from "preact/hooks";
 import { AdoptionView } from "./views/AdoptionView";
 import { VelocityView } from "./views/VelocityView";
 import { CostView } from "./views/CostView";
+import { ComplianceView } from "./views/ComplianceView";
 
-type View = "adoption" | "velocity" | "cost";
+type View = "adoption" | "velocity" | "cost" | "compliance";
 
 export function App() {
   const [view, setView] = useState<View>("adoption");
@@ -22,12 +23,16 @@ export function App() {
           <button onClick={() => setView("cost")} class={view === "cost" ? "active" : ""}>
             Cost
           </button>
+          <button onClick={() => setView("compliance")} class={view === "compliance" ? "active" : ""}>
+            Compliance
+          </button>
         </nav>
       </header>
       <main>
         {view === "adoption" && <AdoptionView />}
         {view === "velocity" && <VelocityView />}
         {view === "cost" && <CostView />}
+        {view === "compliance" && <ComplianceView />}
       </main>
     </div>
   );
