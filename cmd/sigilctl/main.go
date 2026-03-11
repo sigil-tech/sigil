@@ -107,8 +107,8 @@ func cmdStatus(socketPath string) error {
 	var payload map[string]any
 	_ = json.Unmarshal(resp.Payload, &payload)
 
-	fmt.Printf("sigild  status=%v  version=%v\n",
-		payload["status"], payload["version"])
+	fmt.Printf("sigild  status=%v  version=%v  rss_mb=%v\n",
+		payload["status"], payload["version"], payload["rss_mb"])
 	return nil
 }
 

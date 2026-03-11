@@ -713,6 +713,11 @@ const (
 // > 100 MB: log warning and halve ProcessSource polling interval (best-effort).
 // > 150 MB: log error and exit so systemd restarts with a clean heap.
 func runRSSMonitor(ctx context.Context, log *slog.Logger, current *atomic.Int64) {
+	// Seed initial reading immediately so status shows RSS from the start.
+	if mb, err := readRSSMB(); err == nil {
+		current.Store(mb)
+	}
+
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
