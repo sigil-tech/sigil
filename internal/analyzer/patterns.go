@@ -82,6 +82,7 @@ func (d *Detector) Detect(ctx context.Context, window time.Duration) ([]notifier
 		{"time_of_day", d.checkTimeOfDay},
 		{"day_of_week_productivity", d.checkDayOfWeekProductivity},
 		{"session_length", d.checkSessionLength},
+		{"idle_gaps", d.checkIdleGaps},
 		{"ai_query_category_trends", d.checkAIQueryCategoryTrends},
 		{"suggestion_acceptance_trend", d.checkSuggestionAcceptanceTrend},
 		{"progressive_disclosure", d.checkProgressiveDisclosure},
@@ -674,8 +675,9 @@ func (d *Detector) checkTimeOfDay(ctx context.Context, since time.Time) ([]notif
 }
 
 // sessionGap is the minimum idle time between consecutive terminal events
-// required to split them into separate sessions.
-const sessionGap = 2 * time.Hour
+// required to split them into separate sessions.  30 minutes captures real
+// work session boundaries better than the previous 2-hour value.
+const sessionGap = 30 * time.Minute
 
 // checkDayOfWeekProductivity groups file-edit counts by weekday, finds the most
 // productive day, and emits a suggestion when peak is >= 2x trough and peak has >= 10 edits.
@@ -772,6 +774,54 @@ func (d *Detector) checkSessionLength(ctx context.Context, since time.Time) ([]n
 		Body: fmt.Sprintf(
 			"Average coding session: %d minutes (based on terminal activity).",
 			avgMinutes,
+		),
+	}}, nil
+}
+
+// checkIdleGaps reports session count and average duration as a daily insight.
+// This uses the same session-splitting logic as checkSessionLength but surfaces
+// the data as informational rather than as a warning.
+func (d *Detector) checkIdleGaps(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	termEvents, err := d.store.QueryTerminalEvents(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: idle_gaps: %w", err)
+	}
+	if len(termEvents) < 2 {
+		return nil, nil
+	}
+
+	var sessions []time.Duration
+	sessionStart := termEvents[0].Timestamp
+	lastTS := termEvents[0].Timestamp
+
+	for i := 1; i < len(termEvents); i++ {
+		gap := termEvents[i].Timestamp.Sub(lastTS)
+		if gap > sessionGap {
+			sessions = append(sessions, lastTS.Sub(sessionStart))
+			sessionStart = termEvents[i].Timestamp
+		}
+		lastTS = termEvents[i].Timestamp
+	}
+	sessions = append(sessions, lastTS.Sub(sessionStart))
+
+	// Need at least 2 sessions to report meaningful boundaries.
+	if len(sessions) < 2 {
+		return nil, nil
+	}
+
+	var totalMinutes int
+	for _, s := range sessions {
+		totalMinutes += int(s.Minutes())
+	}
+	avgMinutes := totalMinutes / len(sessions)
+
+	return []notifier.Suggestion{{
+		Category:   "insight",
+		Confidence: notifier.ConfidenceWeak,
+		Title:      "Work session summary",
+		Body: fmt.Sprintf(
+			"You've had %d coding sessions averaging %d minutes each.",
+			len(sessions), avgMinutes,
 		),
 	}}, nil
 }

@@ -576,6 +576,55 @@ func TestDetector_SessionLength_shortSessions_noSuggestion(t *testing.T) {
 	}
 }
 
+// --- IdleGaps ---------------------------------------------------------------
+
+func TestDetector_IdleGaps_multipleSessions_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// Create 3 sessions separated by 1-hour gaps (well above 30min sessionGap).
+	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	for session := range 3 {
+		sessionStart := base.Add(time.Duration(session) * 2 * time.Hour)
+		for i := range 5 {
+			insertTerminal(t, ctx, db, "vim main.go", 0, "/proj",
+				sessionStart.Add(time.Duration(i)*5*time.Minute))
+		}
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkIdleGaps(ctx, base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkIdleGaps: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "Work session summary") {
+		t.Errorf("expected idle gaps suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_IdleGaps_singleSession_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+
+	// All events within one session (no gaps > 30min).
+	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	for i := range 10 {
+		insertTerminal(t, ctx, db, "vim main.go", 0, "/proj",
+			base.Add(time.Duration(i)*2*time.Minute))
+	}
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.checkIdleGaps(ctx, base.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("checkIdleGaps: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "Work session summary") {
+		t.Error("expected no idle gaps suggestion for single session")
+	}
+}
+
 // --- AIQueryCategoryTrends --------------------------------------------------
 
 func insertAIInteraction(t *testing.T, ctx context.Context, db interface {
