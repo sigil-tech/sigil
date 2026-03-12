@@ -43,7 +43,7 @@ type RoutingPolicy struct {
 
 // Reporter computes and sends anonymized aggregate metrics to the Fleet Aggregation Layer.
 type Reporter struct {
-	store    *store.Store
+	store    store.EventReader
 	endpoint string
 	enabled  bool
 	nodeID   string
@@ -56,7 +56,7 @@ type Reporter struct {
 }
 
 // New creates a Reporter from the given config.
-func New(s *store.Store, cfg config.FleetConfig, log *slog.Logger) *Reporter {
+func New(s store.EventReader, cfg config.FleetConfig, log *slog.Logger) *Reporter {
 	interval := time.Hour
 	if cfg.Interval != "" {
 		if d, err := time.ParseDuration(cfg.Interval); err == nil && d > 0 {

@@ -9,8 +9,12 @@ import (
 	"sync"
 
 	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/store"
 )
+
+// EventInserter is the subset of store operations the collector needs.
+type EventInserter interface {
+	InsertEvent(ctx context.Context, e event.Event) error
+}
 
 // Source is implemented by every event-producing subsystem.
 type Source interface {
@@ -26,7 +30,7 @@ type Source interface {
 // store.  It also exposes a broadcast channel for in-process consumers (e.g.
 // the analyzer's reactive tier).
 type Collector struct {
-	store   *store.Store
+	store   EventInserter
 	sources []Source
 	log     *slog.Logger
 
@@ -39,7 +43,7 @@ type Collector struct {
 }
 
 // New creates a Collector.  sources may be extended before calling Start.
-func New(s *store.Store, log *slog.Logger) *Collector {
+func New(s EventInserter, log *slog.Logger) *Collector {
 	return &Collector{
 		store:     s,
 		log:       log,

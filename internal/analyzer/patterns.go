@@ -56,12 +56,12 @@ const depChurnThreshold = 4
 // Detector runs pure-Go heuristic pattern checks over the local event store
 // and returns actionable suggestions.  It never calls the network.
 type Detector struct {
-	store *store.Store
+	store store.ReadWriter
 	log   *slog.Logger
 }
 
 // NewDetector creates a Detector backed by the given store.
-func NewDetector(s *store.Store, log *slog.Logger) *Detector {
+func NewDetector(s store.ReadWriter, log *slog.Logger) *Detector {
 	return &Detector{store: s, log: log}
 }
 

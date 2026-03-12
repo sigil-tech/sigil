@@ -20,6 +20,13 @@ import (
 	"github.com/wambozi/sigil/internal/store"
 )
 
+// SuggestionStore is the subset of store operations the notifier needs.
+type SuggestionStore interface {
+	InsertSuggestion(ctx context.Context, sg store.Suggestion) (int64, error)
+	UpdateSuggestionStatus(ctx context.Context, id int64, status store.SuggestionStatus) error
+	InsertFeedback(ctx context.Context, suggestionID int64, outcome string) error
+}
+
 // Level controls how aggressively suggestions are surfaced.
 type Level int
 
@@ -68,7 +75,7 @@ type Platform interface {
 type Notifier struct {
 	mu       sync.RWMutex
 	level    Level
-	store    *store.Store
+	store    SuggestionStore
 	platform Platform
 	log      *slog.Logger
 
@@ -86,7 +93,7 @@ type Notifier struct {
 }
 
 // New creates a Notifier at the given level.
-func New(s *store.Store, level Level, log *slog.Logger) *Notifier {
+func New(s SuggestionStore, level Level, log *slog.Logger) *Notifier {
 	return &Notifier{
 		level:       level,
 		store:       s,
