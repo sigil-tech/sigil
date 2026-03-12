@@ -6,6 +6,9 @@ package sources
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -13,26 +16,53 @@ import (
 )
 
 // FileSource watches a list of directory trees for file-system events using
-// fsnotify (backed by inotify on Linux).  It emits event.KindFile events.
+// fsnotify (backed by inotify on Linux).  It recursively walks each path and
+// watches all subdirectories, automatically adding new directories as they
+// are created.
 type FileSource struct {
-	// Paths is the initial set of directories to watch.  Additional paths can
-	// be added at runtime via watcher.Add after Start is called.
+	// Paths is the initial set of root directories to watch recursively.
 	Paths []string
+
+	// IgnorePatterns are path substrings that should be skipped during the
+	// recursive walk (e.g. ".git", "node_modules", "vendor").
+	IgnorePatterns []string
+}
+
+// defaultIgnorePatterns covers directories that generate massive inotify noise
+// with no useful workflow signal.
+var defaultIgnorePatterns = []string{
+	".git",
+	"node_modules",
+	"vendor",
+	"__pycache__",
+	".next",
+	"dist",
+	".cache",
+	".venv",
+	"target",       // Rust/Maven
+	"build",        // Gradle/generic
+	".nix-profile",
+	"result",       // Nix build output symlink
 }
 
 func (s *FileSource) Name() string { return "files" }
 
 // Events starts the watcher and streams file events until ctx is cancelled.
 func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
+	if len(s.IgnorePatterns) == 0 {
+		s.IgnorePatterns = defaultIgnorePatterns
+	}
+
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("files: create watcher: %w", err)
 	}
 
-	for _, p := range s.Paths {
-		if err := w.Add(p); err != nil {
+	// Recursively walk each root path and watch all subdirectories.
+	for _, root := range s.Paths {
+		if _, walkErr := s.walkAndWatch(w, root); walkErr != nil {
 			w.Close()
-			return nil, fmt.Errorf("files: watch %s: %w", p, err)
+			return nil, fmt.Errorf("files: walk %s: %w", root, walkErr)
 		}
 	}
 
@@ -51,6 +81,20 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 				if !ok {
 					return
 				}
+
+				// Auto-watch newly created directories so we pick up
+				// files in dirs created after startup.
+				if fe.Op&fsnotify.Create != 0 && !s.shouldIgnore(fe.Name) {
+					// Best-effort: if it's a directory, add it.
+					// Ignore errors (might be a file, or already watched).
+					_ = w.Add(fe.Name)
+				}
+
+				// Skip events for ignored paths.
+				if s.shouldIgnore(fe.Name) {
+					continue
+				}
+
 				e := event.Event{
 					Kind:   event.KindFile,
 					Source: s.Name(),
@@ -70,8 +114,6 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 				if !ok {
 					return
 				}
-				// Log watcher errors as events so the store has a record,
-				// but don't crash the source.
 				e := event.Event{
 					Kind:   event.KindFile,
 					Source: s.Name(),
@@ -90,4 +132,38 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	}()
 
 	return ch, nil
+}
+
+// walkAndWatch recursively adds all subdirectories under root to the watcher,
+// skipping ignored patterns.  Returns the number of directories watched.
+func (s *FileSource) walkAndWatch(w *fsnotify.Watcher, root string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable dirs
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if s.shouldIgnore(path) {
+			return filepath.SkipDir
+		}
+		if addErr := w.Add(path); addErr != nil {
+			return nil // skip dirs we can't watch (permissions, etc.)
+		}
+		count++
+		return nil
+	})
+	return count, err
+}
+
+// shouldIgnore returns true if any ignore pattern appears as a path component.
+func (s *FileSource) shouldIgnore(path string) bool {
+	for _, pat := range s.IgnorePatterns {
+		if strings.Contains(path, string(filepath.Separator)+pat+string(filepath.Separator)) ||
+			strings.HasSuffix(path, string(filepath.Separator)+pat) {
+			return true
+		}
+	}
+	return false
 }

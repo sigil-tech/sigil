@@ -62,6 +62,8 @@ func run() error {
 		return cmdEvents(*socketPath, *dbPath, args)
 	case "tail":
 		return cmdTail(*socketPath, *dbPath)
+	case "tail-suggestions":
+		return cmdTailSuggestions(*socketPath)
 	case "files":
 		return cmdFiles(*socketPath)
 	case "commands":
@@ -143,6 +145,56 @@ func cmdTail(socketPath, dbPath string) error {
 	for {
 		_ = cmdEvents(socketPath, dbPath, nil)
 		time.Sleep(2 * time.Second)
+	}
+}
+
+// cmdTailSuggestions polls the suggestions endpoint and prints only new ones.
+func cmdTailSuggestions(socketPath string) error {
+	fmt.Fprintln(os.Stderr, "sigilctl tail-suggestions: polling every 5s (Ctrl-C to stop)...")
+	seen := make(map[int64]bool)
+	first := true
+	for {
+		resp, err := call(socketPath, "suggestions", nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if !resp.OK {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		var suggestions []struct {
+			ID         int64   `json:"id"`
+			Status     string  `json:"status"`
+			Confidence float64 `json:"confidence"`
+			Title      string  `json:"title"`
+			Body       string  `json:"body"`
+		}
+		if err := json.Unmarshal(resp.Payload, &suggestions); err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		for _, s := range suggestions {
+			if seen[s.ID] {
+				continue
+			}
+			seen[s.ID] = true
+			if first {
+				// On first poll, mark existing suggestions as seen without printing
+				continue
+			}
+			ts := time.Now().Format("15:04:05")
+			fmt.Printf("[%s] #%d %s (%.2f) — %s\n", ts, s.ID, s.Status, s.Confidence, s.Title)
+			if s.Body != "" {
+				fmt.Printf("         %s\n", s.Body)
+			}
+			fmt.Println()
+		}
+		first = false
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -710,6 +762,7 @@ Commands:
   status                        Show daemon health and version
   events [-n N] [-offline]      List the N most recent events (default 20)
   tail                          Poll and stream live events every 2s
+  tail-suggestions              Stream new suggestions as they appear
   files                         Top files by edit count in the last 24h
   commands                      Command frequency table for the last 24h
   patterns                      Detected patterns with confidence scores
