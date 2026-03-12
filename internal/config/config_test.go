@@ -8,10 +8,10 @@ import (
 
 func TestLoad(t *testing.T) {
 	tests := []struct {
-		name        string
-		toml        string // empty string means: no file
-		wantErr     bool
-		check       func(t *testing.T, cfg *Config)
+		name    string
+		toml    string // empty string means: no file
+		wantErr bool
+		check   func(t *testing.T, cfg *Config)
 	}{
 		{
 			name: "missing file returns defaults",

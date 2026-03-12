@@ -49,7 +49,7 @@ type NotifierConfig struct {
 
 // InferenceConfig configures the inference engine backends.
 type InferenceConfig struct {
-	Mode  string              `toml:"mode"`
+	Mode  string               `toml:"mode"`
 	Local InferenceLocalConfig `toml:"local"`
 	Cloud InferenceCloudConfig `toml:"cloud"`
 }

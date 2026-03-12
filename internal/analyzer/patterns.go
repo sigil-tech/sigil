@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/wambozi/sigil/internal/event"
@@ -144,7 +143,7 @@ func (d *Detector) checkEditThenTest(ctx context.Context, since time.Time) ([]no
 			if te.Timestamp.After(deadline) {
 				break
 			}
-			if isTestOrBuildCmd(cmdFromPayload(te.Payload)) {
+			if event.IsTestOrBuildCmd(event.CmdFromPayload(te.Payload)) {
 				followedCount[dir]++
 				break // count at most one test run per edit event
 			}
@@ -224,15 +223,15 @@ func (d *Detector) checkEditTestFailLoop(ctx context.Context, since time.Time) (
 		})
 	}
 	for _, te := range termEvents {
-		cmd := cmdFromPayload(te.Payload)
-		if !isTestOrBuildCmd(cmd) {
+		cmd := event.CmdFromPayload(te.Payload)
+		if !event.IsTestOrBuildCmd(cmd) {
 			continue
 		}
 		timeline = append(timeline, timelineEntry{
 			ts:       te.Timestamp,
 			isFile:   false,
 			cmd:      cmd,
-			exitCode: exitCodeFromPayload(te.Payload),
+			exitCode: exitCodeOrZero(te.Payload),
 		})
 	}
 
@@ -342,7 +341,7 @@ func (d *Detector) checkStuckDetection(ctx context.Context, since time.Time) ([]
 	// Collect timestamps of test/build failures.
 	var failTimes []time.Time
 	for _, te := range termEvents {
-		if isTestOrBuildCmd(cmdFromPayload(te.Payload)) && exitCodeFromPayload(te.Payload) != 0 {
+		if event.IsTestOrBuildCmd(event.CmdFromPayload(te.Payload)) && exitCodeOrZero(te.Payload) != 0 {
 			failTimes = append(failTimes, te.Timestamp)
 		}
 	}
@@ -552,11 +551,11 @@ func (d *Detector) checkBuildFailureStreak(ctx context.Context, since time.Time)
 	streak := 0
 	maxStreak := 0
 	for _, te := range termEvents {
-		cmd := cmdFromPayload(te.Payload)
-		if !isTestOrBuildCmd(cmd) {
+		cmd := event.CmdFromPayload(te.Payload)
+		if !event.IsTestOrBuildCmd(cmd) {
 			continue
 		}
-		exitCode := exitCodeFromPayload(te.Payload)
+		exitCode := exitCodeOrZero(te.Payload)
 		if exitCode != 0 {
 			streak++
 			if streak > maxStreak {
@@ -984,7 +983,7 @@ func (d *Detector) progressiveTier0(ctx context.Context, since time.Time) ([]not
 	}
 	failures := 0
 	for _, te := range termEvents {
-		if isTestOrBuildCmd(cmdFromPayload(te.Payload)) && exitCodeFromPayload(te.Payload) != 0 {
+		if event.IsTestOrBuildCmd(event.CmdFromPayload(te.Payload)) && exitCodeOrZero(te.Payload) != 0 {
 			failures++
 		}
 	}
@@ -1030,7 +1029,7 @@ func (d *Detector) progressiveTier1(ctx context.Context, since time.Time) ([]not
 			if te.Timestamp.After(deadline) {
 				break
 			}
-			if isTestOrBuildCmd(cmdFromPayload(te.Payload)) {
+			if event.IsTestOrBuildCmd(event.CmdFromPayload(te.Payload)) {
 				followedCount[dir]++
 				break
 			}
@@ -1111,49 +1110,16 @@ func dirFromPayload(payload map[string]any) string {
 	return filepath.Dir(path)
 }
 
-func cmdFromPayload(payload map[string]any) string {
-	cmd, _ := payload["cmd"].(string)
-	return cmd
-}
-
-func exitCodeFromPayload(payload map[string]any) int {
-	switch v := payload["exit_code"].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	}
-	return 0
-}
-
 func cwdFromPayload(payload map[string]any) string {
 	cwd, _ := payload["cwd"].(string)
 	return cwd
 }
 
-// isTestOrBuildCmd reports whether cmd looks like a test or build invocation.
-// The list is intentionally conservative — false negatives are safer than
-// false positives for streak detection.
-func isTestOrBuildCmd(cmd string) bool {
-	if cmd == "" {
-		return false
-	}
-	prefixes := []string{
-		"go test", "go build", "go vet",
-		"make", "cargo test", "cargo build",
-		"npm test", "npm run test", "npm run build",
-		"pytest", "python -m pytest",
-		"./gradlew", "mvn test", "mvn build",
-	}
-	lower := strings.ToLower(strings.TrimSpace(cmd))
-	for _, p := range prefixes {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	return false
+// exitCodeOrZero returns the exit code from a terminal event payload,
+// defaulting to 0 (success) when the field is absent.
+func exitCodeOrZero(payload map[string]any) int {
+	code, _ := event.ExitCodeFromPayload(payload)
+	return code
 }
 
 // checkWindowContextSwitching uses Hyprland window focus events to detect

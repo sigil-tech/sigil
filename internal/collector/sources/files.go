@@ -39,10 +39,10 @@ var defaultIgnorePatterns = []string{
 	"dist",
 	".cache",
 	".venv",
-	"target",       // Rust/Maven
-	"build",        // Gradle/generic
+	"target", // Rust/Maven
+	"build",  // Gradle/generic
 	".nix-profile",
-	"result",       // Nix build output symlink
+	"result", // Nix build output symlink
 }
 
 func (s *FileSource) Name() string { return "files" }

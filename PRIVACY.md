@@ -15,6 +15,8 @@ Sigil observes your workflow at the metadata level — never the content:
 | **Terminal commands** | The command string and exit code — not stdin/stdout output |
 | **Git activity** | Commit counts, branch names, and repository paths — not diffs or commit messages |
 | **Process names** | Names of running processes (e.g., `nvim`, `go`, `docker`) — not arguments or environment variables |
+| **Window focus** | Active window title and app name on Hyprland — not window contents or input |
+| **AI interactions** | Query category, routing (local/cloud), and latency — not query text unless you enable logging |
 
 All records include a timestamp and are stored in a local SQLite database.
 
@@ -97,6 +99,20 @@ sigilctl export > my_data.jsonl
 
 The export format is human-readable JSON — one record per line — so you can
 inspect exactly what has been stored.
+
+---
+
+## Fleet telemetry (optional)
+
+When fleet reporting is enabled, Sigil sends anonymized hourly metrics to your
+configured fleet endpoint. The payload contains only aggregate counts (event
+totals, pattern counts, adoption tier) — no file paths, no command strings, no
+personal data. Fleet is disabled by default.
+
+```toml
+[fleet]
+enabled = false   # set to true to opt in
+```
 
 ---
 

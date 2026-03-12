@@ -31,26 +31,26 @@ type SuggestionStore interface {
 type Level int
 
 const (
-	LevelSilent        Level = 0
-	LevelDigest        Level = 1
-	LevelAmbient       Level = 2 // default
+	LevelSilent         Level = 0
+	LevelDigest         Level = 1
+	LevelAmbient        Level = 2 // default
 	LevelConversational Level = 3
-	LevelAutonomous    Level = 4
+	LevelAutonomous     Level = 4
 )
 
 // Confidence thresholds — suggestions below the level's minimum are stored but
 // not displayed until enough observations have accumulated.
 const (
-	ConfidenceWeak      = 0.3 // 2-3 observations
-	ConfidenceModerate  = 0.6 // 5-10 observations — minimum for LevelAmbient
-	ConfidenceStrong    = 0.8 // 15+ observations
+	ConfidenceWeak       = 0.3 // 2-3 observations
+	ConfidenceModerate   = 0.6 // 5-10 observations — minimum for LevelAmbient
+	ConfidenceStrong     = 0.8 // 15+ observations
 	ConfidenceVeryStrong = 0.9 // 25+ — eligible for LevelAutonomous auto-execute
 )
 
 // Rate-limiting constants — prevent notification floods when the analyzer
 // produces a burst of suggestions.
 const (
-	ambientMinInterval       = 15 * time.Minute
+	ambientMinInterval        = 15 * time.Minute
 	conversationalMinInterval = 5 * time.Minute
 )
 

@@ -170,7 +170,7 @@ func TestDetector_EditTestFailLoop_successBreaksCycle(t *testing.T) {
 	// The success resets the pattern; only 1 cycle after the success.
 	insertFile(t, ctx, db, "/proj/handler.go", now.Add(-25*time.Minute))
 	insertTerminal(t, ctx, db, "go test ./...", 1, "/proj", now.Add(-24*time.Minute))
-	insertFile(t, ctx, db, "/proj/handler.go", now.Add(-20*time.Minute)) // cycle 1
+	insertFile(t, ctx, db, "/proj/handler.go", now.Add(-20*time.Minute))              // cycle 1
 	insertTerminal(t, ctx, db, "go test ./...", 0, "/proj", now.Add(-19*time.Minute)) // success
 	insertFile(t, ctx, db, "/proj/handler.go", now.Add(-15*time.Minute))
 	insertTerminal(t, ctx, db, "go test ./...", 1, "/proj", now.Add(-14*time.Minute))
@@ -477,8 +477,8 @@ func TestDetector_DayOfWeekProductivity_peakDay_suggestionReturned(t *testing.T)
 
 	// Use fixed dates: Monday gets 12 edits, Tuesday gets 5.
 	// Peak (12) >= 2x trough (5) and peak >= 10.
-	monday := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)    // Monday
-	tuesday := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)   // Tuesday
+	monday := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)  // Monday
+	tuesday := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC) // Tuesday
 
 	for i := range 12 {
 		insertFile(t, ctx, db, "/proj/main.go", monday.Add(time.Duration(i)*time.Minute))
@@ -962,7 +962,7 @@ func TestIsTestOrBuildCmd(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		got := isTestOrBuildCmd(tt.cmd)
+		got := event.IsTestOrBuildCmd(tt.cmd)
 		if got != tt.want {
 			t.Errorf("isTestOrBuildCmd(%q) = %v, want %v", tt.cmd, got, tt.want)
 		}

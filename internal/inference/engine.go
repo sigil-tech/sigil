@@ -25,7 +25,7 @@ const (
 // CompletionResult is the parsed response from a chat completion call.
 type CompletionResult struct {
 	Content   string `json:"content"`
-	Routing   string `json:"routing"`    // "local" or "cloud"
+	Routing   string `json:"routing"` // "local" or "cloud"
 	LatencyMS int64  `json:"latency_ms"`
 }
 

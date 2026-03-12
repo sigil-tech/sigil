@@ -292,11 +292,11 @@ func (s *Store) QuerySuggestions(ctx context.Context, status SuggestionStatus, n
 	out := make([]Suggestion, 0)
 	for rows.Next() {
 		var (
-			sg            Suggestion
-			actionCmd     sql.NullString
-			createdAtMS   int64
-			shownAtMS     sql.NullInt64
-			resolvedAtMS  sql.NullInt64
+			sg           Suggestion
+			actionCmd    sql.NullString
+			createdAtMS  int64
+			shownAtMS    sql.NullInt64
+			resolvedAtMS sql.NullInt64
 		)
 		if err := rows.Scan(
 			&sg.ID, &sg.Category, &sg.Confidence, &sg.Title, &sg.Body,

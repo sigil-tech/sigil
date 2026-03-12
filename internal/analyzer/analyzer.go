@@ -44,9 +44,9 @@ type Summary struct {
 
 // Analyzer drives both the local heuristic pass and the periodic inference query.
 type Analyzer struct {
-	store    store.ReadWriter
-	engine   *inference.Engine
-	detector *Detector
+	store     store.ReadWriter
+	engine    *inference.Engine
+	detector  *Detector
 	interval  time.Duration
 	log       *slog.Logger
 	triggerCh chan struct{}
@@ -61,8 +61,8 @@ type Analyzer struct {
 // (the product plan specifies hourly for v0).
 func New(s store.ReadWriter, engine *inference.Engine, interval time.Duration, log *slog.Logger) *Analyzer {
 	return &Analyzer{
-		store:  s,
-		engine: engine,
+		store:     s,
+		engine:    engine,
 		detector:  NewDetector(s, log),
 		interval:  interval,
 		log:       log,

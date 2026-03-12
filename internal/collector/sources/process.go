@@ -238,7 +238,7 @@ func (s *ProcessSource) emitExited(ch chan<- event.Event, ctx context.Context, c
 			"cmdline":      sess.Cmdline,
 			"category":     sess.Category,
 			"phase":        "end",
-			"duration_sec":  int(duration.Seconds()),
+			"duration_sec": int(duration.Seconds()),
 			"exit_state":   sess.LastState,
 		}
 		if sess.ExitCode >= 0 {

@@ -2,7 +2,6 @@ package actuator
 
 import (
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,8 +35,11 @@ func (b *BuildSplitActuator) RunEventLoop(broadcast <-chan event.Event, splitNot
 			continue
 		}
 
-		if isTestOrBuildCmd(cmd) {
-			exitCode := exitCodeFromPayload(ev.Payload)
+		if event.IsTestOrBuildCmd(cmd) {
+			exitCode, ok := event.ExitCodeFromPayload(ev.Payload)
+			if !ok {
+				exitCode = -1
+			}
 			if exitCode == -1 && !b.pendingBuild {
 				// Build started (exit_code -1 indicates in-progress, but
 				// typically terminal events come with a final exit code).
@@ -70,37 +72,4 @@ func (b *BuildSplitActuator) RunEventLoop(broadcast <-chan event.Event, splitNot
 			}
 		}
 	}
-}
-
-// isTestOrBuildCmd reports whether cmd looks like a test or build invocation.
-func isTestOrBuildCmd(cmd string) bool {
-	if cmd == "" {
-		return false
-	}
-	prefixes := []string{
-		"go test", "go build", "go vet",
-		"make", "cargo test", "cargo build",
-		"npm test", "npm run test", "npm run build",
-		"pytest", "python -m pytest",
-		"./gradlew", "mvn test", "mvn build",
-	}
-	lower := strings.ToLower(strings.TrimSpace(cmd))
-	for _, p := range prefixes {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	return false
-}
-
-func exitCodeFromPayload(payload map[string]any) int {
-	switch v := payload["exit_code"].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	}
-	return -1
 }

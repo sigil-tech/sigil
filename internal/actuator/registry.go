@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// RunCmd executes a shell command. The default uses sh -c via os/exec.
+// It can be replaced in Registry for testing.
+type RunCmd func(ctx context.Context, cmd string) error
+
+// defaultRunCmd executes cmd via "sh -c".
+func defaultRunCmd(ctx context.Context, cmd string) error {
+	return exec.CommandContext(ctx, "sh", "-c", cmd).Run()
+}
+
 // StoreWriter is the subset of store.Store that the registry needs for
 // persisting actions. Defined as an interface to avoid an import cycle
 // (store imports event; actuator is a sibling package).
@@ -19,6 +28,7 @@ type Registry struct {
 	actuators []Actuator
 	notify    func(Action) // called when an action is taken; wired to socket.Notify in main
 	store     StoreWriter
+	runCmd    RunCmd
 	log       *slog.Logger
 }
 
@@ -27,8 +37,14 @@ func New(s StoreWriter, notify func(Action), log *slog.Logger) *Registry {
 	return &Registry{
 		store:  s,
 		notify: notify,
+		runCmd: defaultRunCmd,
 		log:    log,
 	}
+}
+
+// SetRunCmd overrides the command executor used by poll. Intended for testing.
+func (r *Registry) SetRunCmd(fn RunCmd) {
+	r.runCmd = fn
 }
 
 // Register adds an actuator to the registry.
@@ -63,7 +79,7 @@ func (r *Registry) poll(ctx context.Context) {
 		for _, action := range actions {
 			// Execute the command if set.
 			if action.ExecuteCmd != "" {
-				if err := exec.CommandContext(ctx, "sh", "-c", action.ExecuteCmd).Run(); err != nil {
+				if err := r.runCmd(ctx, action.ExecuteCmd); err != nil {
 					r.log.Warn("actuator execute failed",
 						"actuator", a.Name(),
 						"action", action.ID,

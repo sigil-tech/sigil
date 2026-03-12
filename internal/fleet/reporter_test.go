@@ -231,8 +231,8 @@ func TestRun_disabledReturnsImmediately(t *testing.T) {
 // counts build commands and their exit codes.
 func TestComputeBuildSuccessRate(t *testing.T) {
 	tests := []struct {
-		name     string
-		events   []struct {
+		name   string
+		events []struct {
 			cmd      string
 			exitCode any // float64 simulates JSON-decoded number; int tests int branch
 		}

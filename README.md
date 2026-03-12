@@ -5,10 +5,10 @@
 
 Sigil is a self-tuning intelligence layer for professional software engineers.
 It runs as a lightweight background daemon that observes your workflow — file
-edits, terminal commands, git activity, and process signals — builds a local
-model of your patterns entirely on-device, and surfaces actionable insights as
-desktop notifications the moment you need them. No cloud required; no data
-leaves your machine unless you opt in.
+edits, terminal commands, git activity, process signals, and window focus — builds
+a local model of your patterns entirely on-device, and surfaces actionable
+insights as desktop notifications the moment you need them. No cloud required;
+no data leaves your machine unless you opt in.
 
 ## Install
 
@@ -38,20 +38,24 @@ curl -fsSL https://raw.githubusercontent.com/wambozi/sigil/main/scripts/install.
 ## Architecture
 
 ```
-Sources → Collector → Store (SQLite)
+Sources → Collector → Store (SQLite WAL)
                   ↓
-              Analyzer (timer)
-                  ↓ local heuristics + Cactus LLM
+              Analyzer (timer) → Detector (15 heuristic checks)
+                  ↓               ↓ optional cloud enrichment
               Notifier → notify-send / osascript
                   ↑
               Socket server ← sigilctl / shell
+                  ↑
+              Actuator registry (reversible actions)
 ```
 
-**Event sources:** file system (fsnotify), process poll (/proc), git, terminal commands via shell hook.
+**Event sources (6):** file system (fsnotify), process poll (/proc), git, terminal commands (shell hook), Hyprland window focus (IPC), AI interactions.
 
-**Two-tier analysis:** fast local heuristics run every cycle; optional cloud pass via [Cactus](https://github.com/cactus-compute/cactus) for deeper weekly summaries.
+**Two-tier analysis:** 15 fast local heuristic checks run every cycle; optional cloud pass for deeper reasoning.
 
 **Five notification levels:** 0 Silent → 1 Digest → 2 Ambient (default) → 3 Conversational → 4 Autonomous.
+
+**Fleet (optional):** anonymized hourly metrics aggregation for team-level insights. Opt-out disables all telemetry.
 
 ## Privacy
 

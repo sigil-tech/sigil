@@ -56,7 +56,7 @@ notifier (imports store interfaces)
   ↑
 analyzer (imports event, store, inference, notifier)
   ↑
-actuator (no internal imports; defines own StoreWriter interface)
+actuator (imports event; defines own StoreWriter interface)
   ↑
 fleet (imports event, store, config)
   ↑
@@ -78,8 +78,13 @@ cmd/sigilctl (socket client + offline SQLite reads)
 | `Platform` | notifier | OS-specific notification delivery |
 | `Actuator` | actuator | Reversible action execution |
 | `SuggestionStore` | notifier | Suggestion persistence |
+| `RunCmd` | actuator | Shell command execution (injectable for testing) |
 
 Consumers depend on these interfaces, not on `*store.Store` directly.
+
+### Shared Payload Helpers
+
+`event.IsTestOrBuildCmd`, `event.ExitCodeFromPayload`, `event.CmdFromPayload` live in `internal/event/payload.go`. Both `analyzer` and `actuator` use these — do not duplicate.
 
 ### Mocks
 

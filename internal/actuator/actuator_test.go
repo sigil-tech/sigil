@@ -3,7 +3,6 @@ package actuator
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -96,7 +95,7 @@ func TestIsTestOrBuildCmd(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isTestOrBuildCmd(tt.cmd)
+			got := event.IsTestOrBuildCmd(tt.cmd)
 			if got != tt.want {
 				t.Errorf("isTestOrBuildCmd(%q) = %v; want %v", tt.cmd, got, tt.want)
 			}
@@ -109,43 +108,51 @@ func TestExitCodeFromPayload(t *testing.T) {
 		name    string
 		payload map[string]any
 		want    int
+		wantOK  bool
 	}{
 		{
 			name:    "float64 zero",
 			payload: map[string]any{"exit_code": float64(0)},
 			want:    0,
+			wantOK:  true,
 		},
 		{
 			name:    "float64 non-zero",
 			payload: map[string]any{"exit_code": float64(1)},
 			want:    1,
+			wantOK:  true,
 		},
 		{
 			name:    "int",
 			payload: map[string]any{"exit_code": int(2)},
 			want:    2,
+			wantOK:  true,
 		},
 		{
 			name:    "int64",
 			payload: map[string]any{"exit_code": int64(127)},
 			want:    127,
+			wantOK:  true,
 		},
 		{
-			name:    "missing key returns -1",
+			name:    "missing key",
 			payload: map[string]any{},
-			want:    -1,
+			want:    0,
+			wantOK:  false,
 		},
 		{
-			name:    "wrong type returns -1",
+			name:    "wrong type",
 			payload: map[string]any{"exit_code": "zero"},
-			want:    -1,
+			want:    0,
+			wantOK:  false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := exitCodeFromPayload(tt.payload)
-			if got != tt.want {
-				t.Errorf("exitCodeFromPayload(%v) = %d; want %d", tt.payload, got, tt.want)
+			got, ok := event.ExitCodeFromPayload(tt.payload)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("ExitCodeFromPayload(%v) = (%d, %v); want (%d, %v)",
+					tt.payload, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
@@ -477,20 +484,21 @@ func TestRegistry_poll_execFailure(t *testing.T) {
 	reg := New(store, func(a Action) {
 		notified = append(notified, a)
 	}, log)
+	reg.SetRunCmd(func(_ context.Context, _ string) error {
+		return errors.New("exec failed")
+	})
 
-	// ExecuteCmd is a command guaranteed to fail; poll should log and skip it.
 	reg.Register(&testActuator{
 		name: "exec-fail",
 		actions: []Action{
 			{
 				ID:         "exec-fail-1",
-				ExecuteCmd: "false", // exits with code 1 on any POSIX system
+				ExecuteCmd: "echo should-not-run",
 				ExpiresAt:  time.Now().Add(30 * time.Second),
 			},
 		},
 	})
 
-	// Must not panic; the action is skipped after the exec error.
 	reg.poll(context.Background())
 
 	if len(store.actions) != 0 {
@@ -501,7 +509,34 @@ func TestRegistry_poll_execFailure(t *testing.T) {
 	}
 }
 
-// Ensure the fmt import is used (it is referenced in TestExitCodeFromPayload via
-// t.Errorf format strings, but the compiler needs a direct use of the package).
-// This blank import assertion keeps "fmt" live without dummy calls.
-var _ = fmt.Sprintf
+func TestRegistry_poll_execSuccess(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := &mockStore{}
+
+	var executed []string
+	reg := New(store, nil, log)
+	reg.SetRunCmd(func(_ context.Context, cmd string) error {
+		executed = append(executed, cmd)
+		return nil
+	})
+
+	reg.Register(&testActuator{
+		name: "exec-ok",
+		actions: []Action{
+			{
+				ID:         "exec-ok-1",
+				ExecuteCmd: "docker compose up -d",
+				ExpiresAt:  time.Now().Add(30 * time.Second),
+			},
+		},
+	})
+
+	reg.poll(context.Background())
+
+	if len(executed) != 1 || executed[0] != "docker compose up -d" {
+		t.Errorf("expected RunCmd to receive command; got %v", executed)
+	}
+	if len(store.actions) != 1 || store.actions[0] != "exec-ok-1" {
+		t.Errorf("expected action persisted after successful exec; got %v", store.actions)
+	}
+}
