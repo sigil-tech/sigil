@@ -187,6 +187,75 @@ func TestDetector_EditTestFailLoop_successBreaksCycle(t *testing.T) {
 	}
 }
 
+// --- StuckDetection ---------------------------------------------------------
+
+func TestDetector_StuckDetection_manyEditsWithFailures_suggestionReturned(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// 6 edits to the same file in 10 minutes (above threshold of 5 in 15min),
+	// with a test failure in the same window.
+	for i := range 6 {
+		insertFile(t, ctx, db, "/proj/handler.go", now.Add(-time.Duration(10-i)*time.Minute))
+	}
+	insertTerminal(t, ctx, db, "go test ./...", 1, "/proj", now.Add(-5*time.Minute))
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.Detect(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if !hasSuggestionWithTitle(t, suggestions, "Possible stuck on file") {
+		t.Errorf("expected stuck detection suggestion; got %+v", suggestions)
+	}
+}
+
+func TestDetector_StuckDetection_manyEditsNoFailures_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// 6 edits but all tests pass — not stuck, just active.
+	for i := range 6 {
+		insertFile(t, ctx, db, "/proj/handler.go", now.Add(-time.Duration(10-i)*time.Minute))
+	}
+	insertTerminal(t, ctx, db, "go test ./...", 0, "/proj", now.Add(-5*time.Minute))
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.Detect(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "Possible stuck on file") {
+		t.Error("expected no stuck suggestion when tests pass")
+	}
+}
+
+func TestDetector_StuckDetection_fewEditsWithFailures_noSuggestion(t *testing.T) {
+	db := openMemoryStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Only 3 edits (below threshold of 5) with a failure.
+	for i := range 3 {
+		insertFile(t, ctx, db, "/proj/handler.go", now.Add(-time.Duration(10-i)*time.Minute))
+	}
+	insertTerminal(t, ctx, db, "go test ./...", 1, "/proj", now.Add(-5*time.Minute))
+
+	det := NewDetector(db, newTestLogger())
+	suggestions, err := det.Detect(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if hasSuggestionWithTitle(t, suggestions, "Possible stuck on file") {
+		t.Error("expected no stuck suggestion with only 3 edits")
+	}
+}
+
 // --- BuildFailureStreak -----------------------------------------------------
 
 func TestDetector_BuildFailureStreak_threeFailures_suggestionReturned(t *testing.T) {

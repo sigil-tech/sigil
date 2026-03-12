@@ -38,6 +38,13 @@ const editTestFailLoopMin = 3
 // are counted.  Cycles older than this are discarded.
 const editTestFailLoopWindow = 30 * time.Minute
 
+// stuckEditThreshold is the minimum number of edits to a single file within
+// stuckWindow to consider the engineer "stuck" on that file.
+const stuckEditThreshold = 5
+
+// stuckWindow is the rolling window for counting edits per file.
+const stuckWindow = 15 * time.Minute
+
 // Detector runs pure-Go heuristic pattern checks over the local event store
 // and returns actionable suggestions.  It never calls the network.
 type Detector struct {
@@ -63,6 +70,7 @@ func (d *Detector) Detect(ctx context.Context, window time.Duration) ([]notifier
 	}{
 		{"edit_then_test", d.checkEditThenTest},
 		{"edit_test_fail_loop", d.checkEditTestFailLoop},
+		{"stuck_detection", d.checkStuckDetection},
 		{"frequent_files", d.checkFrequentFiles},
 		{"build_failure_streak", d.checkBuildFailureStreak},
 		{"context_switch_frequency", d.checkContextSwitchFrequency},
@@ -288,6 +296,93 @@ func (d *Detector) checkEditTestFailLoop(ctx context.Context, since time.Time) (
 				filepath.Base(path), count,
 			),
 		})
+	}
+	return out, nil
+}
+
+// checkStuckDetection detects when an engineer is thrashing on a single file:
+// editing it many times in a short window while tests are also failing.  This
+// complements checkEditTestFailLoop by catching stuck-ness even when the
+// edit→test→fail sequence isn't perfectly interleaved — the raw edit velocity
+// on one file combined with failures is a strong signal.
+func (d *Detector) checkStuckDetection(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	fileEvents, err := d.store.QueryRecentFileEvents(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: stuck_detection: fetch file events: %w", err)
+	}
+	termEvents, err := d.store.QueryTerminalEvents(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("patterns: stuck_detection: fetch terminal events: %w", err)
+	}
+	if len(fileEvents) == 0 {
+		return nil, nil
+	}
+
+	// Collect edit timestamps per file path.
+	editsPerFile := make(map[string][]time.Time)
+	for _, fe := range fileEvents {
+		path, _ := fe.Payload["path"].(string)
+		if path == "" {
+			continue
+		}
+		editsPerFile[path] = append(editsPerFile[path], fe.Timestamp)
+	}
+
+	// Collect timestamps of test/build failures.
+	var failTimes []time.Time
+	for _, te := range termEvents {
+		if isTestOrBuildCmd(cmdFromPayload(te.Payload)) && exitCodeFromPayload(te.Payload) != 0 {
+			failTimes = append(failTimes, te.Timestamp)
+		}
+	}
+
+	// For each file, check if any stuckWindow-sized sliding window contains
+	// >= stuckEditThreshold edits AND at least one test failure overlaps.
+	var out []notifier.Suggestion
+	for path, edits := range editsPerFile {
+		if len(edits) < stuckEditThreshold {
+			continue
+		}
+
+		// Sliding window: for each edit, count how many other edits fall
+		// within [edit.time, edit.time + stuckWindow].  Edits are already
+		// sorted ascending (from the store query).
+		for i := 0; i <= len(edits)-stuckEditThreshold; i++ {
+			windowStart := edits[i]
+			windowEnd := windowStart.Add(stuckWindow)
+
+			// Count edits in this window.
+			count := 0
+			for j := i; j < len(edits) && !edits[j].After(windowEnd); j++ {
+				count++
+			}
+			if count < stuckEditThreshold {
+				continue
+			}
+
+			// Check for at least one test failure in the same window.
+			hasFailure := false
+			for _, ft := range failTimes {
+				if !ft.Before(windowStart) && !ft.After(windowEnd) {
+					hasFailure = true
+					break
+				}
+			}
+			if !hasFailure {
+				continue
+			}
+
+			out = append(out, notifier.Suggestion{
+				Category:   "pattern",
+				Confidence: notifier.ConfidenceStrong,
+				Title:      "Possible stuck on file",
+				Body: fmt.Sprintf(
+					"%s edited %d times in %d minutes with test failures — consider stepping back or rubber-ducking the problem.",
+					filepath.Base(path), count, int(stuckWindow.Minutes()),
+				),
+			})
+			break // one suggestion per file is enough
+		}
 	}
 	return out, nil
 }
