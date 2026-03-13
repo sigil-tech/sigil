@@ -10,7 +10,7 @@ result-*
 /sigild
 cover.out
 dev.toml
-.specify
+.specify/templates
 specs
 vendor
 node_modules
