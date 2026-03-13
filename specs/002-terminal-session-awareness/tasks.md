@@ -100,6 +100,6 @@
 
 ### Final
 
-- [ ] **Task 4.1**: Final verification and coverage gate
+- [x] **Task 4.1**: Final verification and coverage gate
   - Test: `make check && make coverage`
   - Depends: Task 1.6, Task 2.8, Task 3.4

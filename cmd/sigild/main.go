@@ -734,7 +734,7 @@ func registerHandlers(
 				SessionID: sid,
 				CmdCount:  si.CmdCount,
 				FirstTS:   si.FirstTS,
-				LastTS:     si.LastTS,
+				LastTS:    si.LastTS,
 				LastCwd:   si.LastCwd,
 			})
 		}
