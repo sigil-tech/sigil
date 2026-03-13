@@ -418,13 +418,14 @@ func registerHandlers(
 	})
 
 	// ingest — called by the shell hook after each command.
-	// Payload: {"cmd":"...","exit_code":0,"cwd":"/home/...","ts":1234567890}
+	// Payload: {"cmd":"...","exit_code":0,"cwd":"/home/...","ts":1234567890,"session_id":"..."}
 	srv.Handle("ingest", func(ctx context.Context, req socket.Request) socket.Response {
 		var p struct {
-			Cmd      string `json:"cmd"`
-			ExitCode int    `json:"exit_code"`
-			Cwd      string `json:"cwd"`
-			Ts       int64  `json:"ts"`
+			Cmd       string `json:"cmd"`
+			ExitCode  int    `json:"exit_code"`
+			Cwd       string `json:"cwd"`
+			Ts        int64  `json:"ts"`
+			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return socket.Response{Error: "invalid ingest payload: " + err.Error()}
@@ -438,14 +439,19 @@ func registerHandlers(
 			ts = time.Unix(p.Ts, 0)
 		}
 
+		payload := map[string]any{
+			"cmd":       p.Cmd,
+			"exit_code": p.ExitCode,
+			"cwd":       p.Cwd,
+		}
+		if p.SessionID != "" {
+			payload["session_id"] = p.SessionID
+		}
+
 		terminalSrc.Ingest(event.Event{
-			Kind:   event.KindTerminal,
-			Source: "terminal",
-			Payload: map[string]any{
-				"cmd":       p.Cmd,
-				"exit_code": p.ExitCode,
-				"cwd":       p.Cwd,
-			},
+			Kind:      event.KindTerminal,
+			Source:    "terminal",
+			Payload:   payload,
 			Timestamp: ts,
 		})
 
