@@ -45,3 +45,10 @@ func CmdFromPayload(payload map[string]any) string {
 	cmd, _ := payload["cmd"].(string)
 	return cmd
 }
+
+// SessionIDFromPayload extracts the "session_id" field from a terminal event
+// payload. Returns empty string if the field is missing or not a string.
+func SessionIDFromPayload(payload map[string]any) string {
+	sid, _ := payload["session_id"].(string)
+	return sid
+}

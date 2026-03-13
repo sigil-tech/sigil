@@ -81,3 +81,22 @@ func TestCmdFromPayload(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionIDFromPayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+		want    string
+	}{
+		{"present", map[string]any{"session_id": "12345"}, "12345"},
+		{"missing", map[string]any{}, ""},
+		{"wrong type", map[string]any{"session_id": 42}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SessionIDFromPayload(tt.payload); got != tt.want {
+				t.Errorf("SessionIDFromPayload(%v) = %q; want %q", tt.payload, got, tt.want)
+			}
+		})
+	}
+}

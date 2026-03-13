@@ -418,13 +418,14 @@ func registerHandlers(
 	})
 
 	// ingest — called by the shell hook after each command.
-	// Payload: {"cmd":"...","exit_code":0,"cwd":"/home/...","ts":1234567890}
+	// Payload: {"cmd":"...","exit_code":0,"cwd":"/home/...","ts":1234567890,"session_id":"..."}
 	srv.Handle("ingest", func(ctx context.Context, req socket.Request) socket.Response {
 		var p struct {
-			Cmd      string `json:"cmd"`
-			ExitCode int    `json:"exit_code"`
-			Cwd      string `json:"cwd"`
-			Ts       int64  `json:"ts"`
+			Cmd       string `json:"cmd"`
+			ExitCode  int    `json:"exit_code"`
+			Cwd       string `json:"cwd"`
+			Ts        int64  `json:"ts"`
+			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return socket.Response{Error: "invalid ingest payload: " + err.Error()}
@@ -438,14 +439,19 @@ func registerHandlers(
 			ts = time.Unix(p.Ts, 0)
 		}
 
+		payload := map[string]any{
+			"cmd":       p.Cmd,
+			"exit_code": p.ExitCode,
+			"cwd":       p.Cwd,
+		}
+		if p.SessionID != "" {
+			payload["session_id"] = p.SessionID
+		}
+
 		terminalSrc.Ingest(event.Event{
-			Kind:   event.KindTerminal,
-			Source: "terminal",
-			Payload: map[string]any{
-				"cmd":       p.Cmd,
-				"exit_code": p.ExitCode,
-				"cwd":       p.Cwd,
-			},
+			Kind:      event.KindTerminal,
+			Source:    "terminal",
+			Payload:   payload,
 			Timestamp: ts,
 		})
 
@@ -681,6 +687,59 @@ func registerHandlers(
 			return socket.Response{Error: err.Error()}
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(actions)}
+	})
+
+	// sessions — return active terminal sessions from the last 24 hours.
+	srv.Handle("sessions", func(ctx context.Context, _ socket.Request) socket.Response {
+		termEvents, err := db.QueryTerminalEvents(ctx, time.Now().Add(-24*time.Hour))
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("query terminal events: %s", err)}
+		}
+
+		// Group by session_id inline (simple map loop, no analyzer import needed).
+		type sessionInfo struct {
+			CmdCount int    `json:"cmd_count"`
+			FirstTS  int64  `json:"first_ts"`
+			LastTS   int64  `json:"last_ts"`
+			LastCwd  string `json:"last_cwd"`
+		}
+		sessions := make(map[string]*sessionInfo)
+		for _, e := range termEvents {
+			sid, _ := e.Payload["session_id"].(string)
+			if sid == "" {
+				sid = "_unknown"
+			}
+			si, ok := sessions[sid]
+			if !ok {
+				si = &sessionInfo{FirstTS: e.Timestamp.Unix()}
+				sessions[sid] = si
+			}
+			si.CmdCount++
+			si.LastTS = e.Timestamp.Unix()
+			if cwd, _ := e.Payload["cwd"].(string); cwd != "" {
+				si.LastCwd = cwd
+			}
+		}
+
+		type sessionRow struct {
+			SessionID string `json:"session_id"`
+			CmdCount  int    `json:"cmd_count"`
+			FirstTS   int64  `json:"first_ts"`
+			LastTS    int64  `json:"last_ts"`
+			LastCwd   string `json:"last_cwd"`
+		}
+		rows := make([]sessionRow, 0, len(sessions))
+		for sid, si := range sessions {
+			rows = append(rows, sessionRow{
+				SessionID: sid,
+				CmdCount:  si.CmdCount,
+				FirstTS:   si.FirstTS,
+				LastTS:    si.LastTS,
+				LastCwd:   si.LastCwd,
+			})
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(rows)}
 	})
 
 	// view-changed — called by the shell when the active tool view changes.

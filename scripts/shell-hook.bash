@@ -5,6 +5,8 @@
 # Uses PROMPT_COMMAND to capture each executed command.
 # Sends metadata to sigild via Unix socket (non-blocking).
 
+_SIGILD_SESSION_ID="$$"
+
 _sigild_prompt_cmd() {
     local _exit=$?
     local _cmd
@@ -19,11 +21,12 @@ _sigild_prompt_cmd() {
     local _cwd_json="${PWD//\\/\\\\}"
     _cwd_json="${_cwd_json//\"/\\\"}"
 
-    printf '{"method":"ingest","payload":{"cmd":"%s","exit_code":%d,"cwd":"%s","ts":%d}}\n' \
+    printf '{"method":"ingest","payload":{"cmd":"%s","exit_code":%d,"cwd":"%s","ts":%d,"session_id":"%s"}}\n' \
         "$_cmd_json" \
         "$_exit" \
         "$_cwd_json" \
         "$(date +%s)" \
+        "$_SIGILD_SESSION_ID" \
         | nc -U -w0 "$_sock" 2>/dev/null &
 }
 

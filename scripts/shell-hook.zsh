@@ -5,6 +5,8 @@
 # Sends each executed command to sigild via Unix socket (non-blocking).
 # Adds < 1ms latency to every prompt redraw.
 
+_SIGILD_SESSION_ID="$$"
+
 _sigild_precmd() {
     local _sigild_exit=$?
     local _sigild_cmd
@@ -21,11 +23,12 @@ _sigild_precmd() {
     local _sigild_cwd_json="${PWD//\\/\\\\}"
     _sigild_cwd_json="${_sigild_cwd_json//\"/\\\"}"
 
-    printf '{"method":"ingest","payload":{"cmd":"%s","exit_code":%d,"cwd":"%s","ts":%d}}\n' \
+    printf '{"method":"ingest","payload":{"cmd":"%s","exit_code":%d,"cwd":"%s","ts":%d,"session_id":"%s"}}\n' \
         "$_sigild_cmd_json" \
         "$_sigild_exit" \
         "$_sigild_cwd_json" \
         "$(date +%s)" \
+        "$_SIGILD_SESSION_ID" \
         | nc -U -w0 "$_sigild_sock" 2>/dev/null &
 }
 
