@@ -10,3 +10,6 @@ result-*
 /sigild
 cover.out
 dev.toml
+.specify
+specs
+vendor
