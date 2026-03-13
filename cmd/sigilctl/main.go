@@ -88,6 +88,8 @@ func run() error {
 		return cmdExport(*dbPath)
 	case "model":
 		return cmdModel(args)
+	case "sessions":
+		return cmdSessions(*socketPath)
 	case "fleet":
 		return cmdFleet(*socketPath, args)
 	default:
@@ -529,6 +531,42 @@ func defaultDBPath() string {
 	return filepath.Join(base, "sigild", "data.db")
 }
 
+// cmdSessions prints terminal session summaries from the last 24 hours.
+func cmdSessions(socketPath string) error {
+	resp, err := call(socketPath, "sessions", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var sessions []struct {
+		SessionID string `json:"session_id"`
+		CmdCount  int    `json:"cmd_count"`
+		FirstTS   int64  `json:"first_ts"`
+		LastTS    int64  `json:"last_ts"`
+		LastCwd   string `json:"last_cwd"`
+	}
+	if err := json.Unmarshal(resp.Payload, &sessions); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("No terminal sessions in the last 24 hours.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION\tCOMMANDS\tFIRST\tLAST\tCWD")
+	for _, s := range sessions {
+		first := time.Unix(s.FirstTS, 0).Format("15:04")
+		last := time.Unix(s.LastTS, 0).Format("15:04")
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\n", s.SessionID, s.CmdCount, first, last, s.LastCwd)
+	}
+	return w.Flush()
+}
+
 // cmdActions prints recent undoable actions.
 func cmdActions(socketPath string) error {
 	resp, err := call(socketPath, "actions", nil)
@@ -766,6 +804,7 @@ Commands:
   files                         Top files by edit count in the last 24h
   commands                      Command frequency table for the last 24h
   patterns                      Detected patterns with confidence scores
+  sessions                      Terminal session summaries (last 24h)
   suggestions                   Suggestion history with lifecycle status
   summary                       Trigger an immediate analysis cycle
   level                         Show current notification level

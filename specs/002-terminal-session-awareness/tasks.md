@@ -79,22 +79,22 @@
 
 ### Phase 3: Sessions CLI command + socket handler
 
-- [ ] **Task 3.1**: Add `sessions` socket handler in sigild
+- [x] **Task 3.1**: Add `sessions` socket handler in sigild
   - Files: `cmd/sigild/main.go`
   - Test: `go build ./cmd/sigild/`
   - Depends: Task 1.1
 
-- [ ] **Task 3.2**: Add `sessions` subcommand to sigilctl
+- [x] **Task 3.2**: Add `sessions` subcommand to sigilctl
   - Files: `cmd/sigilctl/main.go`
   - Test: `go build ./cmd/sigilctl/`
   - Depends: Task 3.1
 
-- [ ] **Task 3.3**: Update socket protocol documentation
+- [x] **Task 3.3**: Update socket protocol documentation
   - Files: `docs/socket-protocol.md`
   - Test: none
   - Depends: Task 3.1
 
-- [ ] **Task 3.4**: Phase 3 verification
+- [x] **Task 3.4**: Phase 3 verification
   - Test: `make check`
   - Depends: Task 3.1, Task 3.2, Task 3.3
 
