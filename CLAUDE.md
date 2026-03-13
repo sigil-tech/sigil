@@ -114,6 +114,18 @@ TOML config at `$XDG_CONFIG_HOME/sigil/config.toml`. Sections: `daemon`, `notifi
 
 Optional telemetry aggregation (`internal/fleet/`). Computes anonymized hourly metrics, reports adoption tier, can receive routing policy from fleet endpoint. Opt-out clears queue and disables.
 
+## VS Code Extension
+
+The `extensions/vscode/` directory contains a VS Code extension that surfaces sigild suggestions as IDE notification toasts.
+
+```bash
+cd extensions/vscode
+npm install && npm run compile    # build
+npm run package                   # produce .vsix
+```
+
+When the extension is connected, desktop notifications are automatically suppressed (single-channel routing via `HasExternalSurface` on the notifier).
+
 ## Community & Governance Files
 
 When making changes that affect the contributor experience — adding CI pipelines, changing build steps, modifying the DAG, adding new data collection, or changing quality gates — update these files as needed:

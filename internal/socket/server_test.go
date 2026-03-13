@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func startTestServer(t *testing.T) (*Server, string) {
@@ -504,6 +505,58 @@ func TestServer_subscribeTwoSubscribersThenUnsubscribeOne(t *testing.T) {
 	}
 	if eventName != topic {
 		t.Errorf("event name: got %q, want %q", eventName, topic)
+	}
+}
+
+func TestServer_subscriberCount(t *testing.T) {
+	srv, sockPath := startTestServer(t)
+	const topic = "count.topic"
+
+	// No subscribers yet.
+	if got := srv.SubscriberCount(topic); got != 0 {
+		t.Errorf("SubscriberCount before subscribe: got %d, want 0", got)
+	}
+
+	// Subscribe one client.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	subReq := Request{
+		Method:  "subscribe",
+		Payload: json.RawMessage(`{"topic":"` + topic + `"}`),
+	}
+	if err := json.NewEncoder(conn).Encode(subReq); err != nil {
+		t.Fatalf("encode subscribe: %v", err)
+	}
+	sc := bufio.NewScanner(conn)
+	if !sc.Scan() {
+		t.Fatalf("expected ack, got EOF")
+	}
+	var ack Response
+	if err := json.Unmarshal(sc.Bytes(), &ack); err != nil || !ack.OK {
+		t.Fatalf("bad ack: err=%v ok=%v", err, ack.OK)
+	}
+
+	if got := srv.SubscriberCount(topic); got != 1 {
+		t.Errorf("SubscriberCount after subscribe: got %d, want 1", got)
+	}
+
+	// Unrelated topic should still be 0.
+	if got := srv.SubscriberCount("other.topic"); got != 0 {
+		t.Errorf("SubscriberCount for other topic: got %d, want 0", got)
+	}
+
+	// Disconnect — count should return to 0 after the server detects it.
+	conn.Close()
+	// The handleSubscribe goroutine is blocked on <-ch. Send a Notify to
+	// trigger a write to the closed connection, which causes the goroutine
+	// to exit and run the deferred cleanup.
+	srv.Notify(topic, MarshalPayload("trigger-cleanup"))
+	time.Sleep(200 * time.Millisecond)
+
+	if got := srv.SubscriberCount(topic); got != 0 {
+		t.Errorf("SubscriberCount after disconnect: got %d, want 0", got)
 	}
 }
 

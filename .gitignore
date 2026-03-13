@@ -13,3 +13,4 @@ dev.toml
 .specify
 specs
 vendor
+node_modules

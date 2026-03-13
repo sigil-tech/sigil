@@ -90,6 +90,11 @@ type Notifier struct {
 	// confidence gate (>= ConfidenceModerate). It receives the store-assigned
 	// ID and the suggestion. Must be non-blocking.
 	OnSuggestion func(id int64, sg Suggestion)
+
+	// HasExternalSurface, if set, reports whether an external notification
+	// surface (e.g. IDE extension) is actively connected. When true, desktop
+	// notifications via Platform.Send are suppressed to avoid duplicates.
+	HasExternalSurface func() bool
 }
 
 // New creates a Notifier at the given level.
@@ -148,16 +153,26 @@ func (n *Notifier) Surface(sg Suggestion) {
 	level := n.level
 	n.mu.RUnlock()
 
+	// When an external surface (e.g. IDE extension) is connected, skip
+	// desktop notifications — the suggestion was already pushed via
+	// OnSuggestion above.
+	externalActive := n.HasExternalSurface != nil && n.HasExternalSurface()
+
 	switch level {
 	case LevelSilent:
 		// Stored above; nothing more to do.
 
 	case LevelDigest:
-		n.mu.Lock()
-		n.digestQueue = append(n.digestQueue, sg)
-		n.mu.Unlock()
+		if !externalActive {
+			n.mu.Lock()
+			n.digestQueue = append(n.digestQueue, sg)
+			n.mu.Unlock()
+		}
 
 	case LevelAmbient:
+		if externalActive {
+			return
+		}
 		if sg.Confidence < ConfidenceModerate {
 			return // not confident enough to interrupt
 		}
@@ -169,6 +184,9 @@ func (n *Notifier) Surface(sg Suggestion) {
 		go n.show(id, sg, false)
 
 	case LevelConversational:
+		if externalActive {
+			return
+		}
 		if !n.checkRateLimit(LevelConversational, conversationalMinInterval) {
 			n.log.Debug("notifier: conversational rate limit suppressed notification",
 				"title", sg.Title)
@@ -177,6 +195,9 @@ func (n *Notifier) Surface(sg Suggestion) {
 		go n.show(id, sg, sg.ActionCmd != "")
 
 	case LevelAutonomous:
+		if externalActive {
+			return
+		}
 		if sg.ActionCmd != "" && sg.Confidence >= ConfidenceVeryStrong {
 			go n.executeWithCountdown(id, sg)
 		} else {

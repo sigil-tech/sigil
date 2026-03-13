@@ -260,6 +260,9 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		})
 		srv.Notify("suggestions", payload)
 	}
+	ntf.HasExternalSurface = func() bool {
+		return srv.SubscriberCount("suggestions") > 0
+	}
 
 	// --- Actuator registry --------------------------------------------------
 	actuatorNotify := func(a actuator.Action) {

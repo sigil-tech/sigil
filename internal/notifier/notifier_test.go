@@ -569,6 +569,187 @@ func TestExecuteWithCountdown_executeFailure(t *testing.T) {
 	}
 }
 
+// --- HasExternalSurface suppression tests ------------------------------------
+
+func TestSurface_suppressesDesktopWhenExternalSurfaceActive(t *testing.T) {
+	platform := &stubPlatform{}
+	var callbackCalled bool
+	ntf := &Notifier{
+		level:       LevelAmbient,
+		store:       openTestStore(t),
+		platform:    platform,
+		log:         discardLogger(),
+		lastShownAt: make(map[Level]time.Time),
+		OnSuggestion: func(_ int64, _ Suggestion) {
+			callbackCalled = true
+		},
+		HasExternalSurface: func() bool { return true },
+	}
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "External surface test",
+		Body:       "should not trigger desktop",
+	}
+	ntf.Surface(sg)
+
+	// OnSuggestion callback should still fire.
+	if !callbackCalled {
+		t.Error("OnSuggestion should fire even when external surface is active")
+	}
+
+	// Platform.Send should NOT be called.
+	if platform.sends != 0 {
+		t.Errorf("expected 0 platform sends when external surface active, got %d", platform.sends)
+	}
+
+	// Suggestion should still be persisted.
+	ctx := context.Background()
+	db := ntf.store.(*store.Store)
+	suggestions, err := db.QuerySuggestions(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("query suggestions: %v", err)
+	}
+	if len(suggestions) != 1 {
+		t.Errorf("expected 1 stored suggestion, got %d", len(suggestions))
+	}
+}
+
+func TestSurface_resumesDesktopWhenNoExternalSurface(t *testing.T) {
+	platform := &stubPlatform{}
+	ntf := &Notifier{
+		level:              LevelAmbient,
+		store:              openTestStore(t),
+		platform:           platform,
+		log:                discardLogger(),
+		lastShownAt:        make(map[Level]time.Time),
+		HasExternalSurface: func() bool { return false },
+	}
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "No external surface",
+		Body:       "should trigger desktop",
+	}
+	ntf.Surface(sg)
+
+	// Give the show goroutine a moment to call Platform.Send.
+	time.Sleep(100 * time.Millisecond)
+
+	if platform.sends != 1 {
+		t.Errorf("expected 1 platform send when no external surface, got %d", platform.sends)
+	}
+}
+
+func TestSurface_nilHasExternalSurface(t *testing.T) {
+	platform := &stubPlatform{}
+	ntf := &Notifier{
+		level:       LevelAmbient,
+		store:       openTestStore(t),
+		platform:    platform,
+		log:         discardLogger(),
+		lastShownAt: make(map[Level]time.Time),
+		// HasExternalSurface intentionally nil — backwards compat
+	}
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "Nil callback",
+		Body:       "should work as before",
+	}
+	ntf.Surface(sg)
+
+	// Give the show goroutine a moment.
+	time.Sleep(100 * time.Millisecond)
+
+	if platform.sends != 1 {
+		t.Errorf("expected 1 platform send with nil HasExternalSurface, got %d", platform.sends)
+	}
+}
+
+func TestSurface_digestSuppressedWhenExternalActive(t *testing.T) {
+	platform := &stubPlatform{}
+	ntf := &Notifier{
+		level:              LevelDigest,
+		store:              openTestStore(t),
+		platform:           platform,
+		log:                discardLogger(),
+		lastShownAt:        make(map[Level]time.Time),
+		HasExternalSurface: func() bool { return true },
+	}
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "Digest external",
+		Body:       "should not queue",
+	}
+	ntf.Surface(sg)
+
+	// Digest queue should be empty since external surface is active.
+	ntf.FlushDigest()
+	if platform.sends != 0 {
+		t.Errorf("expected 0 sends after FlushDigest with external surface, got %d", platform.sends)
+	}
+}
+
+func TestSurface_conversationalSuppressedWhenExternalActive(t *testing.T) {
+	platform := &stubPlatform{}
+	ntf := &Notifier{
+		level:              LevelConversational,
+		store:              openTestStore(t),
+		platform:           platform,
+		log:                discardLogger(),
+		lastShownAt:        make(map[Level]time.Time),
+		HasExternalSurface: func() bool { return true },
+	}
+
+	sg := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceStrong,
+		Title:      "Conversational external",
+		Body:       "should not trigger desktop",
+		ActionCmd:  "echo test",
+	}
+	ntf.Surface(sg)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if platform.sends != 0 {
+		t.Errorf("expected 0 platform sends at conversational with external surface, got %d", platform.sends)
+	}
+}
+
+func TestSurface_autonomousSuppressedWhenExternalActive(t *testing.T) {
+	platform := &stubPlatform{}
+	ntf := &Notifier{
+		level:              LevelAutonomous,
+		store:              openTestStore(t),
+		platform:           platform,
+		log:                discardLogger(),
+		lastShownAt:        make(map[Level]time.Time),
+		HasExternalSurface: func() bool { return true },
+	}
+
+	sg := Suggestion{
+		Category:   "optimization",
+		Confidence: ConfidenceVeryStrong,
+		Title:      "Autonomous external",
+		Body:       "should not auto-execute",
+		ActionCmd:  "echo run",
+	}
+	ntf.Surface(sg)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if platform.sends != 0 {
+		t.Errorf("expected 0 platform sends at autonomous with external surface, got %d", platform.sends)
+	}
+}
+
 // errPlatform is a stub Platform whose Execute always returns an error,
 // used to exercise the failure branch of executeWithCountdown.
 type errPlatform struct {

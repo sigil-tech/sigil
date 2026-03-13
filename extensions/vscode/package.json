@@ -1,0 +1,47 @@
+{
+  "name": "sigil-vscode",
+  "displayName": "Sigil",
+  "description": "Surface sigild suggestions in VS Code",
+  "version": "0.1.0",
+  "publisher": "wambozi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wambozi/sigil"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Sigil",
+      "properties": {
+        "sigil.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to sigild Unix socket. Auto-detected from $XDG_RUNTIME_DIR if empty."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sigil.showSuggestions",
+        "title": "Sigil: Show Suggestions"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

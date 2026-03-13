@@ -89,6 +89,14 @@ func (s *Server) Notify(topic string, payload json.RawMessage) {
 	}
 }
 
+// SubscriberCount returns the number of active push subscribers for topic.
+func (s *Server) SubscriberCount(topic string) int {
+	s.subMu.RLock()
+	n := len(s.subscribers[topic])
+	s.subMu.RUnlock()
+	return n
+}
+
 // Start begins listening.  It removes any stale socket file before binding.
 // Returns immediately; the accept loop runs in the background until ctx is
 // cancelled.
