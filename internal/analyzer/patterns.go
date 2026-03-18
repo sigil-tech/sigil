@@ -91,6 +91,12 @@ func (d *Detector) Detect(ctx context.Context, window time.Duration) ([]notifier
 		{"ai_query_category_trends", d.checkAIQueryCategoryTrends},
 		{"suggestion_acceptance_trend", d.checkSuggestionAcceptanceTrend},
 		{"progressive_disclosure", d.checkProgressiveDisclosure},
+		{"ready_to_commit", d.checkReadyToCommit},
+		{"task_stuck", d.checkTaskStuck},
+		{"task_completed", d.checkTaskCompleted},
+		{"task_transition", d.checkTaskTransition},
+		{"stale_task", d.checkStaleTask},
+		{"deep_work_vs_thrashing", d.checkDeepWorkVsThrashing},
 	}
 
 	var out []notifier.Suggestion
@@ -1152,6 +1158,216 @@ func cwdFromPayload(payload map[string]any) string {
 func exitCodeOrZero(payload map[string]any) int {
 	code, _ := event.ExitCodeFromPayload(payload)
 	return code
+}
+
+// --- Task-aware detectors (copilot level 2+) --------------------------------
+
+// checkReadyToCommit detects when tests are passing and there are uncommitted
+// file changes, suggesting the engineer commit their work.
+func (d *Detector) checkReadyToCommit(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	task, err := d.store.QueryCurrentTask(ctx)
+	if err != nil || task == nil {
+		return nil, err
+	}
+	if task.Phase != "verifying" && task.Phase != "completing" {
+		return nil, nil
+	}
+	if task.TestRuns == 0 || task.TestFailures > 0 {
+		return nil, nil
+	}
+	gitEvents, err := d.store.QueryGitEvents(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	var lastCommitAt time.Time
+	for i := len(gitEvents) - 1; i >= 0; i-- {
+		if gk, _ := gitEvents[i].Payload["git_kind"].(string); gk == "commit" {
+			lastCommitAt = gitEvents[i].Timestamp
+			break
+		}
+	}
+	if len(task.Files) > 0 && (lastCommitAt.IsZero() || task.LastActivity.After(lastCommitAt)) {
+		return []notifier.Suggestion{{
+			Category:   "task_progress",
+			Confidence: notifier.ConfidenceModerate,
+			Title:      "Tests passing — ready to commit?",
+			Body: fmt.Sprintf(
+				"All %d tests passing on %s with %d files changed.",
+				task.TestRuns, task.Branch, len(task.Files)),
+		}}, nil
+	}
+	return nil, nil
+}
+
+// checkTaskStuck detects when the engineer has been in the stuck phase for
+// more than 20 minutes.
+func (d *Detector) checkTaskStuck(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	task, err := d.store.QueryCurrentTask(ctx)
+	if err != nil || task == nil {
+		return nil, err
+	}
+	if task.Phase != "stuck" {
+		return nil, nil
+	}
+	stuckDuration := time.Since(task.LastActivity)
+	if stuckDuration < 20*time.Minute {
+		return nil, nil
+	}
+	topFile := ""
+	topEdits := 0
+	for f, n := range task.Files {
+		if n > topEdits {
+			topEdits = n
+			topFile = filepath.Base(f)
+		}
+	}
+	body := fmt.Sprintf("Iterating with failures for %dm on %s.", int(stuckDuration.Minutes()), task.Branch)
+	if topFile != "" {
+		body = fmt.Sprintf("%s edited %d times with %d consecutive failures — try a different approach?",
+			topFile, topEdits, task.TestFailures)
+	}
+	return []notifier.Suggestion{{
+		Category:   "task_progress",
+		Confidence: notifier.ConfidenceStrong,
+		Title:      "Possible stuck — step back?",
+		Body:       body,
+	}}, nil
+}
+
+// checkTaskCompleted detects recent task completion and emits positive reinforcement.
+func (d *Detector) checkTaskCompleted(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	tasks, err := d.store.QueryTaskHistory(ctx, since, 5)
+	if err != nil {
+		return nil, err
+	}
+	var out []notifier.Suggestion
+	for _, t := range tasks {
+		if t.CompletedAt == nil || time.Since(*t.CompletedAt) > time.Hour {
+			continue
+		}
+		duration := t.CompletedAt.Sub(t.StartedAt)
+		out = append(out, notifier.Suggestion{
+			Category:   "task_transition",
+			Confidence: notifier.ConfidenceModerate,
+			Title:      "Task completed",
+			Body: fmt.Sprintf("Finished %s — %d commits, %d files in %dm.",
+				t.Branch, t.CommitCount, len(t.Files), int(duration.Minutes())),
+		})
+	}
+	return out, nil
+}
+
+// checkTaskTransition detects idle after a completed task and suggests the next one.
+func (d *Detector) checkTaskTransition(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	task, err := d.store.QueryCurrentTask(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if task != nil {
+		return nil, nil
+	}
+	tasks, err := d.store.QueryTaskHistory(ctx, time.Now().Add(-2*time.Hour), 1)
+	if err != nil || len(tasks) == 0 {
+		return nil, err
+	}
+	last := tasks[0]
+	if last.CompletedAt == nil || time.Since(*last.CompletedAt) > 30*time.Minute {
+		return nil, nil
+	}
+	return []notifier.Suggestion{{
+		Category:   "task_transition",
+		Confidence: notifier.ConfidenceModerate,
+		Title:      "What's next?",
+		Body:       fmt.Sprintf("You finished %s — ready to pick up a new task?", last.Branch),
+	}}, nil
+}
+
+// checkStaleTask detects when the current task branch has had no activity for 2+ hours.
+func (d *Detector) checkStaleTask(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	task, err := d.store.QueryCurrentTask(ctx)
+	if err != nil || task == nil {
+		return nil, err
+	}
+	if time.Since(task.LastActivity) < 2*time.Hour {
+		return nil, nil
+	}
+	fileCount, err := d.store.CountEvents(ctx, "file", time.Now().Add(-30*time.Minute))
+	if err != nil || fileCount == 0 {
+		return nil, err
+	}
+	return []notifier.Suggestion{{
+		Category:   "task_progress",
+		Confidence: notifier.ConfidenceWeak,
+		Title:      "Stale task detected",
+		Body: fmt.Sprintf("No activity on %s (%s) for %dh — still working on this?",
+			task.Branch, filepath.Base(task.RepoRoot), int(time.Since(task.LastActivity).Hours())),
+	}}, nil
+}
+
+// checkDeepWorkVsThrashing measures file-edit concentration. Sustained focus on
+// 1-3 files = deep work. Rapid switching across many files = thrashing.
+func (d *Detector) checkDeepWorkVsThrashing(ctx context.Context, since time.Time) ([]notifier.Suggestion, error) {
+	fileEvents, err := d.store.QueryRecentFileEvents(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	if len(fileEvents) < 10 {
+		return nil, nil
+	}
+
+	type windowStats struct {
+		files map[string]int
+		edits int
+	}
+	windowSize := int64((15 * time.Minute).Seconds())
+	windows := make(map[int64]*windowStats)
+
+	for _, e := range fileEvents {
+		path, _ := e.Payload["path"].(string)
+		if path == "" || isNoisePath(path) {
+			continue
+		}
+		key := e.Timestamp.Unix() / windowSize
+		ws, ok := windows[key]
+		if !ok {
+			ws = &windowStats{files: make(map[string]int)}
+			windows[key] = ws
+		}
+		ws.files[path]++
+		ws.edits++
+	}
+
+	var deepWindows, thrashWindows int
+	for _, ws := range windows {
+		if ws.edits < 5 {
+			continue
+		}
+		filesPerEdit := float64(len(ws.files)) / float64(ws.edits)
+		if filesPerEdit <= 0.3 {
+			deepWindows++
+		} else if filesPerEdit >= 0.7 && len(ws.files) >= 5 {
+			thrashWindows++
+		}
+	}
+
+	if deepWindows > 0 && thrashWindows == 0 {
+		return []notifier.Suggestion{{
+			Category:   "insight",
+			Confidence: notifier.ConfidenceWeak,
+			Title:      "Deep work session",
+			Body:       fmt.Sprintf("Sustained focus detected — %d focused windows today.", deepWindows),
+		}}, nil
+	}
+	if thrashWindows >= 2 {
+		return []notifier.Suggestion{{
+			Category:   "insight",
+			Confidence: notifier.ConfidenceModerate,
+			Title:      "High file switching",
+			Body: fmt.Sprintf("Rapid switching across many files in %d windows — consider focusing on one area.",
+				thrashWindows),
+		}}, nil
+	}
+	return nil, nil
 }
 
 // noisePathComponents are directory names under $HOME that indicate tooling

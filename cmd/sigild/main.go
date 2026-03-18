@@ -309,6 +309,13 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		srv.Notify("actuations", payload)
 	})
 
+	// Auto-test actuator: runs project tests after file saves at level 4.
+	autoTest := actuator.NewAutoTestActuator(log,
+		func() int { return int(ntf.Level()) },
+		func(a actuator.Action) { reg.Notify(a) },
+	)
+	go autoTest.RunEventLoop(col.Subscribe())
+
 	log.Info("actuator registry started")
 
 	// --- Fleet Reporter -----------------------------------------------------
@@ -913,7 +920,7 @@ func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.S
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(rows)}
 	})
 
-	// day-summary — return today's work summary.
+	// day-summary — return today's work summary with per-task breakdown.
 	srv.Handle("day-summary", func(ctx context.Context, _ socket.Request) socket.Response {
 		today := time.Now()
 		tasks, err := db.QueryTasksByDate(ctx, today)
@@ -926,18 +933,39 @@ func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.S
 		allFiles := make(map[string]struct{})
 		var totalEditMin, totalVerifyMin, totalStuckMin float64
 
+		// Per-task breakdown and speed score accumulation.
+		type taskSummary struct {
+			Branch     string  `json:"branch"`
+			RepoRoot   string  `json:"repo_root"`
+			Phase      string  `json:"phase"`
+			DurationMin int    `json:"duration_min"`
+			Files      int     `json:"files"`
+			TotalEdits int     `json:"total_edits"`
+			Commits    int     `json:"commits"`
+			TestRuns   int     `json:"test_runs"`
+			TestFails  int     `json:"test_failures"`
+			Completed  bool    `json:"completed"`
+			SpeedScore float64 `json:"speed_score"` // size-weighted velocity
+		}
+		var taskList []taskSummary
+		var speedScoreSum, speedWeightSum float64
+
 		for _, t := range tasks {
 			started++
 			if t.RepoRoot != "" {
 				repos[t.RepoRoot] = struct{}{}
 			}
 			totalCommits += t.CommitCount
-			if t.CompletedAt != nil {
+			isCompleted := t.CompletedAt != nil
+			if isCompleted {
 				completed++
 			}
-			for f := range t.Files {
+			totalEdits := 0
+			for f, n := range t.Files {
 				allFiles[f] = struct{}{}
+				totalEdits += n
 			}
+
 			duration := t.LastActivity.Sub(t.StartedAt).Minutes()
 			switch t.Phase {
 			case "verifying":
@@ -947,6 +975,30 @@ func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.S
 			default:
 				totalEditMin += duration
 			}
+
+			// Speed score: edits-per-minute, weighted by task size (file count).
+			// Only scored for completed tasks with meaningful duration.
+			var score float64
+			if isCompleted && duration > 1 && len(t.Files) > 0 {
+				score = float64(totalEdits) / duration // edits per minute
+				weight := float64(len(t.Files))
+				speedScoreSum += score * weight
+				speedWeightSum += weight
+			}
+
+			taskList = append(taskList, taskSummary{
+				Branch:      t.Branch,
+				RepoRoot:    t.RepoRoot,
+				Phase:       t.Phase,
+				DurationMin: int(duration),
+				Files:       len(t.Files),
+				TotalEdits:  totalEdits,
+				Commits:     t.CommitCount,
+				TestRuns:    t.TestRuns,
+				TestFails:   t.TestFailures,
+				Completed:   isCompleted,
+				SpeedScore:  score,
+			})
 		}
 
 		repoList := make([]string, 0, len(repos))
@@ -954,16 +1006,24 @@ func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.S
 			repoList = append(repoList, r)
 		}
 
+		// Aggregate speed score (weighted average across completed tasks).
+		var daySpeedScore float64
+		if speedWeightSum > 0 {
+			daySpeedScore = speedScoreSum / speedWeightSum
+		}
+
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
-			"date":             today.Format("2006-01-02"),
-			"repos":            repoList,
-			"tasks_started":    started,
-			"tasks_completed":  completed,
-			"total_commits":    totalCommits,
-			"files_touched":    len(allFiles),
-			"editing_minutes":  int(totalEditMin),
+			"date":              today.Format("2006-01-02"),
+			"repos":             repoList,
+			"tasks_started":     started,
+			"tasks_completed":   completed,
+			"total_commits":     totalCommits,
+			"files_touched":     len(allFiles),
+			"editing_minutes":   int(totalEditMin),
 			"verifying_minutes": int(totalVerifyMin),
-			"stuck_minutes":    int(totalStuckMin),
+			"stuck_minutes":     int(totalStuckMin),
+			"tasks":             taskList,
+			"speed_score":       daySpeedScore,
 		})}
 	})
 }

@@ -1061,15 +1061,29 @@ func cmdDay(socketPath string) error {
 	}
 
 	var d struct {
-		Date            string   `json:"date"`
-		Repos           []string `json:"repos"`
-		TasksStarted    int      `json:"tasks_started"`
-		TasksCompleted  int      `json:"tasks_completed"`
-		TotalCommits    int      `json:"total_commits"`
-		FilesTouched    int      `json:"files_touched"`
-		EditingMinutes  int      `json:"editing_minutes"`
-		VerifyingMinutes int     `json:"verifying_minutes"`
-		StuckMinutes    int      `json:"stuck_minutes"`
+		Date             string   `json:"date"`
+		Repos            []string `json:"repos"`
+		TasksStarted     int      `json:"tasks_started"`
+		TasksCompleted   int      `json:"tasks_completed"`
+		TotalCommits     int      `json:"total_commits"`
+		FilesTouched     int      `json:"files_touched"`
+		EditingMinutes   int      `json:"editing_minutes"`
+		VerifyingMinutes int      `json:"verifying_minutes"`
+		StuckMinutes     int      `json:"stuck_minutes"`
+		SpeedScore       float64  `json:"speed_score"`
+		Tasks            []struct {
+			Branch      string  `json:"branch"`
+			RepoRoot    string  `json:"repo_root"`
+			Phase       string  `json:"phase"`
+			DurationMin int     `json:"duration_min"`
+			Files       int     `json:"files"`
+			TotalEdits  int     `json:"total_edits"`
+			Commits     int     `json:"commits"`
+			TestRuns    int     `json:"test_runs"`
+			TestFails   int     `json:"test_failures"`
+			Completed   bool    `json:"completed"`
+			SpeedScore  float64 `json:"speed_score"`
+		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(resp.Payload, &d); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -1089,5 +1103,24 @@ func cmdDay(socketPath string) error {
 	fmt.Printf("  Files:     %d touched\n", d.FilesTouched)
 	fmt.Printf("  Time:      editing %dm | verifying %dm | stuck %dm\n",
 		d.EditingMinutes, d.VerifyingMinutes, d.StuckMinutes)
+
+	if d.SpeedScore > 0 {
+		fmt.Printf("  Speed:     %.1f edits/min (size-weighted)\n", d.SpeedScore)
+	}
+
+	if len(d.Tasks) > 0 {
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  BRANCH\tPHASE\tTIME\tFILES\tCOMMITS\tTESTS")
+		for _, t := range d.Tasks {
+			status := t.Phase
+			if t.Completed {
+				status = "done"
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%dm\t%d\t%d\t%d/%d\n",
+				t.Branch, status, t.DurationMin, t.Files, t.Commits, t.TestRuns-t.TestFails, t.TestRuns)
+		}
+		w.Flush()
+	}
 	return nil
 }

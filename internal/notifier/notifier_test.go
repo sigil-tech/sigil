@@ -44,7 +44,8 @@ func TestRateLimit_burstSuppressed(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// First call: should pass.
@@ -64,7 +65,8 @@ func TestRateLimit_afterIntervalSucceeds(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// Simulate that the last shown time was more than the interval ago.
@@ -81,7 +83,8 @@ func TestRateLimit_conversationalInterval(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// First call succeeds.
@@ -97,24 +100,32 @@ func TestRateLimit_conversationalInterval(t *testing.T) {
 func TestSurface_ambientStoresEvenWhenRateLimited(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
-	sg := Suggestion{
+	sg1 := Suggestion{
 		Category:   "pattern",
 		Confidence: ConfidenceModerate,
 		Title:      "Test suggestion",
-		Body:       "body",
+		Body:       "body one",
+	}
+	sg2 := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "Test suggestion",
+		Body:       "body two",
 	}
 
 	// First Surface: stored and shown.
-	ntf.Surface(sg)
+	ntf.Surface(sg1)
 	// Second Surface within interval: stored but not shown (rate limited).
-	ntf.Surface(sg)
+	// Uses different body to avoid dedup (dedup is title+body keyed).
+	ntf.Surface(sg2)
 
 	// Both should be persisted in the store regardless of rate limiting.
 	ctx := context.Background()
@@ -135,7 +146,8 @@ func TestSetLevel_and_Level(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	levels := []Level{
@@ -164,7 +176,8 @@ func TestSurface_silent(t *testing.T) {
 		store:       db,
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -198,7 +211,8 @@ func TestSurface_digest(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg1 := Suggestion{Category: "pattern", Confidence: ConfidenceModerate, Title: "First", Body: "body1"}
@@ -227,7 +241,8 @@ func TestFlushDigest(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg1 := Suggestion{Category: "insight", Confidence: ConfidenceModerate, Title: "Tip one", Body: "do this"}
@@ -255,7 +270,8 @@ func TestFlushDigest_empty(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// Nothing queued — FlushDigest must be a no-op.
@@ -274,7 +290,8 @@ func TestSurface_conversational(t *testing.T) {
 		store:       db,
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -306,7 +323,8 @@ func TestSurface_lowConfidence_noCallback(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
 			called = true
 		},
@@ -338,7 +356,8 @@ func TestSurface_OnSuggestionCallback(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(id int64, sg Suggestion) {
 			called = true
 			callbackID = id
@@ -380,20 +399,27 @@ func TestSurface_conversationalRateLimitSuppressed(t *testing.T) {
 		store:       db,
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
-	sg := Suggestion{
+	sg1 := Suggestion{
 		Category:   "pattern",
 		Confidence: ConfidenceStrong,
 		Title:      "Rate-limited conversational",
-		Body:       "first one passes, second is suppressed",
+		Body:       "first one passes",
+	}
+	sg2 := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceStrong,
+		Title:      "Rate-limited conversational",
+		Body:       "second is rate limited",
 	}
 
 	// First call — passes the rate limiter.
-	ntf.Surface(sg)
-	// Second call within the interval — rate limited (display goroutine not spawned).
-	ntf.Surface(sg)
+	ntf.Surface(sg1)
+	// Second call within the interval — rate limited (display suppressed).
+	ntf.Surface(sg2)
 
 	// Both suggestions are persisted regardless of rate limiting.
 	ctx := context.Background()
@@ -419,7 +445,8 @@ func TestSurface_autonomousLowConfidence(t *testing.T) {
 		store:       db,
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -450,7 +477,8 @@ func TestSurface_autonomousNoActionCmd(t *testing.T) {
 		store:       db,
 		platform:    &stubPlatform{},
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -492,7 +520,8 @@ func TestExecuteWithCountdown_success(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -537,7 +566,8 @@ func TestExecuteWithCountdown_executeFailure(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -579,7 +609,8 @@ func TestSurface_suppressesDesktopWhenExternalSurfaceActive(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
 			callbackCalled = true
 		},
@@ -624,6 +655,7 @@ func TestSurface_resumesDesktopWhenNoExternalSurface(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return false },
 	}
 
@@ -650,7 +682,8 @@ func TestSurface_nilHasExternalSurface(t *testing.T) {
 		store:       openTestStore(t),
 		platform:    platform,
 		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		// HasExternalSurface intentionally nil — backwards compat
 	}
 
@@ -678,6 +711,7 @@ func TestSurface_digestSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
@@ -704,6 +738,7 @@ func TestSurface_conversationalSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
@@ -731,6 +766,7 @@ func TestSurface_autonomousSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
