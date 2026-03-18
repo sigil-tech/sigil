@@ -16,9 +16,9 @@ import (
 )
 
 // FileSource watches a list of directory trees for file-system events using
-// fsnotify (backed by inotify on Linux).  It recursively walks each path and
-// watches all subdirectories, automatically adding new directories as they
-// are created.
+// fsnotify (backed by inotify on Linux / kqueue on macOS).  It recursively
+// walks each path and watches all subdirectories, automatically adding new
+// directories as they are created.
 type FileSource struct {
 	// Paths is the initial set of root directories to watch recursively.
 	Paths []string
@@ -26,7 +26,16 @@ type FileSource struct {
 	// IgnorePatterns are path substrings that should be skipped during the
 	// recursive walk (e.g. ".git", "node_modules", "vendor").
 	IgnorePatterns []string
+
+	// MaxWatches caps the total number of directories watched.
+	// macOS kqueue uses one file descriptor per watched dir, so large trees
+	// can easily exhaust the process limit.  0 means DefaultMaxWatches.
+	MaxWatches int
 }
+
+// DefaultMaxWatches is the default ceiling for watched directories.
+// Keeps the daemon well under the typical macOS fd limit (10240).
+const DefaultMaxWatches = 4096
 
 // defaultIgnorePatterns covers directories that generate massive inotify noise
 // with no useful workflow signal.
@@ -59,11 +68,14 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	}
 
 	// Recursively walk each root path and watch all subdirectories.
+	total := 0
 	for _, root := range s.Paths {
-		if _, walkErr := s.walkAndWatch(w, root); walkErr != nil {
+		n, walkErr := s.walkAndWatch(w, root, total)
+		if walkErr != nil {
 			w.Close()
 			return nil, fmt.Errorf("files: walk %s: %w", root, walkErr)
 		}
+		total = n
 	}
 
 	ch := make(chan event.Event, 64)
@@ -136,8 +148,14 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 
 // walkAndWatch recursively adds all subdirectories under root to the watcher,
 // skipping ignored patterns.  Returns the number of directories watched.
-func (s *FileSource) walkAndWatch(w *fsnotify.Watcher, root string) (int, error) {
-	count := 0
+// It stops adding watches once MaxWatches is reached.
+func (s *FileSource) walkAndWatch(w *fsnotify.Watcher, root string, current int) (int, error) {
+	max := s.MaxWatches
+	if max <= 0 {
+		max = DefaultMaxWatches
+	}
+
+	count := current
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable dirs
@@ -147,6 +165,9 @@ func (s *FileSource) walkAndWatch(w *fsnotify.Watcher, root string) (int, error)
 		}
 		if s.shouldIgnore(path) {
 			return filepath.SkipDir
+		}
+		if count >= max {
+			return filepath.SkipAll
 		}
 		if addErr := w.Add(path); addErr != nil {
 			return nil // skip dirs we can't watch (permissions, etc.)

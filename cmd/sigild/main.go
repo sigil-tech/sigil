@@ -76,6 +76,7 @@ type daemonConfig struct {
 	inferenceMode string
 	watchPaths    []string
 	repoPaths     []string
+	maxWatches    int
 	analyzeEvery  time.Duration
 	notifierLevel int
 	logLevel      string
@@ -138,6 +139,7 @@ func parseFlags() daemonConfig {
 		inferenceMode: *inferenceMode,
 		watchPaths:    splitPaths(*watchPaths),
 		repoPaths:     splitPaths(*repoPaths),
+		maxWatches:    fileCfg.Daemon.MaxWatches,
 		analyzeEvery:  *analyzeEvery,
 		notifierLevel: *notifierLevel,
 		logLevel:      *logLevel,
@@ -202,7 +204,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	terminalSrc := sources.NewTerminalSource()
 
 	col := collector.New(db, log)
-	col.Add(&sources.FileSource{Paths: cfg.watchPaths})
+	col.Add(&sources.FileSource{Paths: cfg.watchPaths, MaxWatches: cfg.maxWatches})
 	col.Add(&sources.ProcessSource{})
 	col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
 	col.Add(terminalSrc)

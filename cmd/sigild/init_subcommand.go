@@ -51,10 +51,15 @@ func runInit() error {
 		fmt.Fprintf(os.Stderr, "  [warn] data dir: %v\n", err)
 	}
 
-	// 6. Systemd service (Linux only)
-	if runtime.GOOS == "linux" {
+	// 6. System service (platform-specific auto-start)
+	switch runtime.GOOS {
+	case "linux":
 		if err := installSystemdService(home); err != nil {
 			fmt.Fprintf(os.Stderr, "  [warn] systemd: %v\n", err)
+		}
+	case "darwin":
+		if err := installLaunchdService(home); err != nil {
+			fmt.Fprintf(os.Stderr, "  [warn] launchd: %v\n", err)
 		}
 	}
 
@@ -327,6 +332,64 @@ func installSystemdService(home string) error {
 		} else {
 			fmt.Printf("  [ok]   %s\n", strings.Join(args, " "))
 		}
+	}
+	return nil
+}
+
+// installLaunchdService creates a LaunchAgent plist and loads it on macOS.
+func installLaunchdService(home string) error {
+	agentDir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir LaunchAgents: %w", err)
+	}
+	dst := filepath.Join(agentDir, "com.sigil.sigild.plist")
+
+	// Find the installed sigild binary.
+	exe, err := exec.LookPath("sigild")
+	if err != nil {
+		// Fall back to the current binary path.
+		exe, _ = os.Executable()
+	}
+
+	logDir := filepath.Join(home, ".local", "share", "sigild")
+	_ = os.MkdirAll(logDir, 0o700)
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.sigil.sigild</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>%s/sigild.log</string>
+	<key>StandardErrorPath</key>
+	<string>%s/sigild.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
+`, exe, logDir, logDir)
+
+	if err := os.WriteFile(dst, []byte(plist), 0o644); err != nil {
+		return fmt.Errorf("write plist: %w", err)
+	}
+	fmt.Printf("  [ok]   launchd plist written to %s\n", dst)
+
+	// Load the agent (unload first to avoid "already loaded" errors).
+	_ = exec.Command("launchctl", "unload", dst).Run()
+	out, loadErr := exec.Command("launchctl", "load", dst).CombinedOutput()
+	if loadErr != nil {
+		fmt.Printf("  [warn] launchctl load: %v — %s\n", loadErr, strings.TrimSpace(string(out)))
+	} else {
+		fmt.Printf("  [ok]   launchctl load %s\n", filepath.Base(dst))
 	}
 	return nil
 }
