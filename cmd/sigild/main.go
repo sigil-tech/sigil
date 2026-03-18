@@ -41,8 +41,11 @@ import (
 	"github.com/wambozi/sigil/internal/fleet"
 	"github.com/wambozi/sigil/internal/inference"
 	"github.com/wambozi/sigil/internal/ml"
+	"net/http"
+
 	"github.com/wambozi/sigil/internal/network"
 	"github.com/wambozi/sigil/internal/notifier"
+	"github.com/wambozi/sigil/internal/plugin"
 	"github.com/wambozi/sigil/internal/socket"
 	"github.com/wambozi/sigil/internal/store"
 	"github.com/wambozi/sigil/internal/task"
@@ -368,6 +371,25 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		return fmt.Errorf("start socket: %w", err)
 	}
 	log.Info("socket listening", "path", cfg.socketPath)
+
+	// --- Plugin ingest HTTP server ------------------------------------------
+	pluginIngest := plugin.NewIngestServer(func(pe plugin.Event) {
+		corr, _ := json.Marshal(pe.Correlation)
+		payload, _ := json.Marshal(pe.Payload)
+		if err := db.InsertPluginEvent(ctx, pe.Plugin, pe.Kind, string(corr), string(payload)); err != nil {
+			log.Error("plugin ingest: store event", "plugin", pe.Plugin, "err", err)
+		}
+	}, log)
+	pluginHTTP := &http.Server{
+		Addr:    "127.0.0.1:7775",
+		Handler: pluginIngest.Handler(),
+	}
+	go func() {
+		if err := pluginHTTP.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("plugin ingest server", "err", err)
+		}
+	}()
+	log.Info("plugin ingest listening", "addr", "127.0.0.1:7775")
 
 	// --- Credential store (always initialised; handlers registered below) ---
 	credStore := network.NewCredentialStore()
