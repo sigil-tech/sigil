@@ -35,23 +35,26 @@ func runInit() error {
 		fmt.Fprintf(os.Stderr, "  [warn] shell hook: %v\n", err)
 	}
 
-	// 2. Inference setup
+	// 2. Watch directories
+	watchDirs, repoDirs := setupWatchDirs(reader, home)
+
+	// 3. Inference setup
 	inferenceToml := setupInference(reader)
 
-	// 3. Fleet setup
+	// 4. Fleet setup
 	fleetToml := setupFleet(reader)
 
-	// 4. Config file
-	if err := installConfigWithInference(inferenceToml, fleetToml); err != nil {
+	// 5. Config file
+	if err := installConfigFile(watchDirs, repoDirs, inferenceToml, fleetToml); err != nil {
 		fmt.Fprintf(os.Stderr, "  [warn] config: %v\n", err)
 	}
 
-	// 5. Data directory
+	// 6. Data directory
 	if err := installDataDir(home); err != nil {
 		fmt.Fprintf(os.Stderr, "  [warn] data dir: %v\n", err)
 	}
 
-	// 6. System service (platform-specific auto-start)
+	// 7. System service (platform-specific auto-start)
 	switch runtime.GOOS {
 	case "linux":
 		if err := installSystemdService(home); err != nil {
@@ -153,6 +156,127 @@ func promptString(reader *bufio.Reader, question, defaultVal string) string {
 	return answer
 }
 
+// setupWatchDirs prompts for directories to watch and discovers git repos within them.
+func setupWatchDirs(reader *bufio.Reader, home string) (watchDirs, repoDirs []string) {
+	fmt.Println()
+	fmt.Println("--- Watch Directories ---")
+	fmt.Println("  Sigil watches directories for file edits and discovers git repos within them.")
+
+	defaultDir := filepath.Join(home, "code")
+	if _, err := os.Stat(defaultDir); err != nil {
+		// ~/code doesn't exist, try common alternatives
+		for _, candidate := range []string{"projects", "src", "workspace", "dev"} {
+			p := filepath.Join(home, candidate)
+			if _, err := os.Stat(p); err == nil {
+				defaultDir = p
+				break
+			}
+		}
+	}
+
+	input := promptString(reader,
+		fmt.Sprintf("  Directories to watch (comma-separated) [%s]:", toTildePath(defaultDir, home)),
+		toTildePath(defaultDir, home))
+
+	for _, raw := range strings.Split(input, ",") {
+		dir := strings.TrimSpace(raw)
+		if dir == "" {
+			continue
+		}
+		// Expand ~ for validation but store with ~ prefix
+		expanded := dir
+		if strings.HasPrefix(dir, "~/") {
+			expanded = filepath.Join(home, dir[2:])
+		}
+		if info, err := os.Stat(expanded); err != nil || !info.IsDir() {
+			fmt.Printf("  [warn] %s is not a valid directory, skipping\n", dir)
+			continue
+		}
+		watchDirs = append(watchDirs, dir)
+	}
+
+	if len(watchDirs) == 0 {
+		watchDirs = []string{toTildePath(defaultDir, home)}
+		fmt.Printf("  [info] using default: %s\n", watchDirs[0])
+	}
+
+	// Discover git repos within watch dirs
+	fmt.Println("  Scanning for git repositories...")
+	for _, dir := range watchDirs {
+		expanded := dir
+		if strings.HasPrefix(dir, "~/") {
+			expanded = filepath.Join(home, dir[2:])
+		}
+		repos := discoverRepoDirs(expanded, home)
+		repoDirs = append(repoDirs, repos...)
+	}
+
+	fmt.Printf("  [ok]   %d watch director%s, %d git repo%s discovered\n",
+		len(watchDirs), plural(len(watchDirs)),
+		len(repoDirs), plural(len(repoDirs)))
+
+	if len(repoDirs) > 0 && len(repoDirs) <= 10 {
+		for _, r := range repoDirs {
+			fmt.Printf("         %s\n", r)
+		}
+	} else if len(repoDirs) > 10 {
+		for _, r := range repoDirs[:5] {
+			fmt.Printf("         %s\n", r)
+		}
+		fmt.Printf("         ... and %d more\n", len(repoDirs)-5)
+	}
+
+	return watchDirs, repoDirs
+}
+
+// discoverRepoDirs walks root up to 3 levels deep looking for directories
+// containing a .git subdirectory. Returns paths with ~ prefix.
+func discoverRepoDirs(root, home string) []string {
+	var repos []string
+	maxDepth := strings.Count(root, string(filepath.Separator)) + 3
+
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		// Limit depth
+		if strings.Count(path, string(filepath.Separator)) > maxDepth {
+			return filepath.SkipDir
+		}
+		// Skip noisy directories
+		name := d.Name()
+		if name == "node_modules" || name == "vendor" || name == ".cache" || name == ".venv" || name == "venv" {
+			return filepath.SkipDir
+		}
+		// Check for .git
+		gitDir := filepath.Join(path, ".git")
+		if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+			repos = append(repos, toTildePath(path, home))
+			return filepath.SkipDir // don't recurse into repos (no nested submodules)
+		}
+		return nil
+	})
+	return repos
+}
+
+// toTildePath replaces the home directory prefix with ~.
+func toTildePath(path, home string) string {
+	if strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
 // setupInference prompts the user about local and cloud inference.
 func setupInference(reader *bufio.Reader) string {
 	fmt.Println()
@@ -251,8 +375,8 @@ func setupFleet(reader *bufio.Reader) string {
 	return fmt.Sprintf("[fleet]\nenabled = true\nendpoint = %q\n", endpoint)
 }
 
-// installConfigWithInference creates config.toml with inference and fleet sections.
-func installConfigWithInference(inferenceTOML, fleetTOML string) error {
+// installConfigFile creates config.toml with watch dirs, repo dirs, inference, and fleet sections.
+func installConfigFile(watchDirs, repoDirs []string, inferenceTOML, fleetTOML string) error {
 	cfgPath := config.DefaultPath()
 	if _, err := os.Stat(cfgPath); err == nil {
 		fmt.Printf("  [ok]   config already exists at %s\n", cfgPath)
@@ -263,25 +387,38 @@ func installConfigWithInference(inferenceTOML, fleetTOML string) error {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(cfgPath), err)
 	}
 
-	configContent := fmt.Sprintf(`# Sigil daemon configuration
-# Generated by sigild init
+	var b strings.Builder
+	b.WriteString("# Sigil daemon configuration\n# Generated by sigild init\n\n")
+	b.WriteString("[daemon]\nlog_level = \"info\"\n")
 
-[daemon]
-log_level = "info"
+	if len(watchDirs) > 0 {
+		b.WriteString("watch_dirs = [")
+		if len(watchDirs) == 1 {
+			fmt.Fprintf(&b, "%q", watchDirs[0])
+		} else {
+			b.WriteString("\n")
+			for _, d := range watchDirs {
+				fmt.Fprintf(&b, "  %q,\n", d)
+			}
+		}
+		b.WriteString("]\n")
+	}
 
-[notifier]
-level = 2
-digest_time = "09:00"
+	if len(repoDirs) > 0 {
+		b.WriteString("repo_dirs = [\n")
+		for _, d := range repoDirs {
+			fmt.Fprintf(&b, "  %q,\n", d)
+		}
+		b.WriteString("]\n")
+	}
 
-%s
+	b.WriteString("\n[notifier]\nlevel = 2\ndigest_time = \"09:00\"\n\n")
+	b.WriteString(inferenceTOML)
+	b.WriteString("\n\n[retention]\nraw_event_days = 90\n\n")
+	b.WriteString(fleetTOML)
+	b.WriteString("\n")
 
-[retention]
-raw_event_days = 90
-
-%s
-`, inferenceTOML, fleetTOML)
-
-	if err := os.WriteFile(cfgPath, []byte(configContent), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", cfgPath, err)
 	}
 	fmt.Printf("  [ok]   config written to %s\n", cfgPath)
