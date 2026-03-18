@@ -58,18 +58,33 @@ something useful.
 ## Install
 
 ```bash
-# One-line install
+# One-line install (downloads the latest release binary)
 curl -fsSL https://raw.githubusercontent.com/wambozi/sigil/main/scripts/install.sh | bash
-
-# Or build from source
-git clone https://github.com/wambozi/sigil.git && cd sigil
-make build    # produces ./sigild and ./sigilctl
 ```
+
+### Build from source
+
+Requires Go 1.22+.
+
+```bash
+git clone https://github.com/wambozi/sigil.git && cd sigil
+make install    # builds, installs to $GOPATH/bin, prints next step
+sigild init     # config, shell hooks, systemd service (Linux)
+```
+
+> **Note:** make sure `$GOPATH/bin` (usually `~/go/bin`) is in your `PATH`.
+
+This creates:
+- `~/.config/sigil/config.toml` — daemon configuration
+- `~/.config/sigil/shell-hook.{zsh,bash}` — terminal integration
+- `~/.local/share/sigild/` — data directory
+- `~/.config/systemd/user/sigild.service` — auto-start (Linux only)
+
+Open a new shell (or `source ~/.zshrc`) to activate the hook.
 
 ## Quick Start
 
 ```bash
-sigild init          # config, shell hooks, systemd service
 sigilctl status      # daemon health check
 sigilctl tail        # stream live events as you work
 sigilctl patterns    # see what the daemon has learned
