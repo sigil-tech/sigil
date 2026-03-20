@@ -40,10 +40,12 @@ import (
 	"github.com/wambozi/sigil/internal/event"
 	"github.com/wambozi/sigil/internal/fleet"
 	"github.com/wambozi/sigil/internal/inference"
+	"github.com/wambozi/sigil/internal/ml"
 	"github.com/wambozi/sigil/internal/network"
 	"github.com/wambozi/sigil/internal/notifier"
 	"github.com/wambozi/sigil/internal/socket"
 	"github.com/wambozi/sigil/internal/store"
+	"github.com/wambozi/sigil/internal/task"
 )
 
 func main() {
@@ -215,6 +217,49 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	}
 	log.Info("collector started")
 
+	// --- Task Tracker -------------------------------------------------------
+	taskTracker := task.NewTracker(db, log)
+	if err := taskTracker.Restore(ctx); err != nil {
+		log.Warn("task tracker: restore failed", "err", err)
+	}
+	go taskTracker.RunEventLoop(ctx, col.Subscribe())
+	log.Info("task tracker started")
+
+	// --- ML Engine ----------------------------------------------------------
+	mlCfg := ml.Config{
+		Mode:         ml.RoutingMode(cfg.fileCfg.ML.Mode),
+		RetrainEvery: cfg.fileCfg.ML.RetrainEvery,
+		Local: ml.LocalConfig{
+			Enabled:   cfg.fileCfg.ML.Local.Enabled,
+			ServerURL: cfg.fileCfg.ML.Local.ServerURL,
+			ServerBin: cfg.fileCfg.ML.Local.ServerBin,
+		},
+		Cloud: ml.CloudConfig{
+			Enabled: cfg.fileCfg.ML.Cloud.Enabled,
+			BaseURL: cfg.fileCfg.ML.Cloud.BaseURL,
+			APIKey:  cfg.fileCfg.ML.Cloud.APIKey,
+		},
+	}
+	mlEngine, err := ml.New(mlCfg, log)
+	if err != nil {
+		log.Warn("ml engine: creation failed", "err", err)
+		mlEngine = &ml.Engine{} // nil-safe disabled engine
+	} else if mlEngine.Enabled() {
+		pingCtx, cancelML := context.WithTimeout(ctx, 5*time.Second)
+		if err := mlEngine.Ping(pingCtx); err != nil {
+			log.Warn("ml engine unreachable at startup — will retry", "err", err)
+		} else {
+			log.Info("ml engine reachable")
+		}
+		cancelML()
+	}
+	defer mlEngine.Close()
+
+	// Wire ML into the task tracker for predictions and retraining.
+	if mlEngine.Enabled() {
+		taskTracker.SetMLEngine(&mlEngineAdapter{mlEngine}, cfg.dbPath, cfg.fileCfg.ML.RetrainEvery)
+	}
+
 	// --- Notifier -----------------------------------------------------------
 	ntf := notifier.New(db, notifier.Level(cfg.notifierLevel), log)
 	log.Info("notifier started", "level", cfg.notifierLevel)
@@ -255,6 +300,8 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
 	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg)
+	registerTaskHandlers(srv, taskTracker, db)
+	registerMLHandlers(srv, mlEngine, cfg.dbPath)
 
 	// Wire suggestion push via the notifier's OnSuggestion callback.
 	// Every suggestion that passes the confidence gate is fanned out to any
@@ -298,6 +345,13 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		})
 		srv.Notify("actuations", payload)
 	})
+
+	// Auto-test actuator: runs project tests after file saves at level 4.
+	autoTest := actuator.NewAutoTestActuator(log,
+		func() int { return int(ntf.Level()) },
+		func(a actuator.Action) { reg.Notify(a) },
+	)
+	go autoTest.RunEventLoop(col.Subscribe())
 
 	log.Info("actuator registry started")
 
@@ -824,6 +878,267 @@ func registerHandlers(
 		log.Info("keybinding profile changed", "profile", p.View)
 		return socket.Response{OK: true}
 	})
+}
+
+// --- Task socket handlers ---------------------------------------------------
+
+func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.Store) {
+	// task — return the current inferred task.
+	srv.Handle("task", func(ctx context.Context, _ socket.Request) socket.Response {
+		cur := tracker.Current()
+		if cur == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"phase": "idle",
+			})}
+		}
+
+		// Build top files list (sorted by edit count).
+		type fileEntry struct {
+			Path  string `json:"path"`
+			Edits int    `json:"edits"`
+		}
+		files := make([]fileEntry, 0, len(cur.FilesTouched))
+		for p, n := range cur.FilesTouched {
+			files = append(files, fileEntry{p, n})
+		}
+		for i := 1; i < len(files); i++ {
+			for j := i; j > 0 && files[j].Edits > files[j-1].Edits; j-- {
+				files[j], files[j-1] = files[j-1], files[j]
+			}
+		}
+		if len(files) > 10 {
+			files = files[:10]
+		}
+
+		elapsed := time.Since(cur.StartedAt)
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"id":            cur.ID,
+			"phase":         string(cur.Phase),
+			"repo_root":     cur.RepoRoot,
+			"branch":        cur.Branch,
+			"files":         files,
+			"started_at":    cur.StartedAt.Format(time.RFC3339),
+			"elapsed_min":   int(elapsed.Minutes()),
+			"commit_count":  cur.CommitCount,
+			"test_runs":     cur.TestRuns,
+			"test_failures": cur.TestFailures,
+		})}
+	})
+
+	// task-history — return recent task transitions.
+	srv.Handle("task-history", func(ctx context.Context, _ socket.Request) socket.Response {
+		since := time.Now().Add(-7 * 24 * time.Hour)
+		tasks, err := db.QueryTaskHistory(ctx, since, 20)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		type row struct {
+			ID        string `json:"id"`
+			Phase     string `json:"phase"`
+			RepoRoot  string `json:"repo_root"`
+			Branch    string `json:"branch"`
+			StartedAt string `json:"started_at"`
+			Commits   int    `json:"commits"`
+			Files     int    `json:"files"`
+		}
+		rows := make([]row, 0, len(tasks))
+		for _, t := range tasks {
+			rows = append(rows, row{
+				ID:        t.ID,
+				Phase:     t.Phase,
+				RepoRoot:  t.RepoRoot,
+				Branch:    t.Branch,
+				StartedAt: t.StartedAt.Format(time.RFC3339),
+				Commits:   t.CommitCount,
+				Files:     len(t.Files),
+			})
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(rows)}
+	})
+
+	// day-summary — return today's work summary with per-task breakdown.
+	srv.Handle("day-summary", func(ctx context.Context, _ socket.Request) socket.Response {
+		today := time.Now()
+		tasks, err := db.QueryTasksByDate(ctx, today)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		repos := make(map[string]struct{})
+		var totalCommits, completed, started int
+		allFiles := make(map[string]struct{})
+		var totalEditMin, totalVerifyMin, totalStuckMin float64
+
+		// Per-task breakdown and speed score accumulation.
+		type taskSummary struct {
+			Branch     string  `json:"branch"`
+			RepoRoot   string  `json:"repo_root"`
+			Phase      string  `json:"phase"`
+			DurationMin int    `json:"duration_min"`
+			Files      int     `json:"files"`
+			TotalEdits int     `json:"total_edits"`
+			Commits    int     `json:"commits"`
+			TestRuns   int     `json:"test_runs"`
+			TestFails  int     `json:"test_failures"`
+			Completed  bool    `json:"completed"`
+			SpeedScore float64 `json:"speed_score"` // size-weighted velocity
+		}
+		var taskList []taskSummary
+		var speedScoreSum, speedWeightSum float64
+
+		for _, t := range tasks {
+			started++
+			if t.RepoRoot != "" {
+				repos[t.RepoRoot] = struct{}{}
+			}
+			totalCommits += t.CommitCount
+			isCompleted := t.CompletedAt != nil
+			if isCompleted {
+				completed++
+			}
+			totalEdits := 0
+			for f, n := range t.Files {
+				allFiles[f] = struct{}{}
+				totalEdits += n
+			}
+
+			duration := t.LastActivity.Sub(t.StartedAt).Minutes()
+			switch t.Phase {
+			case "verifying":
+				totalVerifyMin += duration
+			case "stuck":
+				totalStuckMin += duration
+			default:
+				totalEditMin += duration
+			}
+
+			// Speed score: edits-per-minute, weighted by task size (file count).
+			// Only scored for completed tasks with meaningful duration.
+			var score float64
+			if isCompleted && duration > 1 && len(t.Files) > 0 {
+				score = float64(totalEdits) / duration // edits per minute
+				weight := float64(len(t.Files))
+				speedScoreSum += score * weight
+				speedWeightSum += weight
+			}
+
+			taskList = append(taskList, taskSummary{
+				Branch:      t.Branch,
+				RepoRoot:    t.RepoRoot,
+				Phase:       t.Phase,
+				DurationMin: int(duration),
+				Files:       len(t.Files),
+				TotalEdits:  totalEdits,
+				Commits:     t.CommitCount,
+				TestRuns:    t.TestRuns,
+				TestFails:   t.TestFailures,
+				Completed:   isCompleted,
+				SpeedScore:  score,
+			})
+		}
+
+		repoList := make([]string, 0, len(repos))
+		for r := range repos {
+			repoList = append(repoList, r)
+		}
+
+		// Aggregate speed score (weighted average across completed tasks).
+		var daySpeedScore float64
+		if speedWeightSum > 0 {
+			daySpeedScore = speedScoreSum / speedWeightSum
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"date":              today.Format("2006-01-02"),
+			"repos":             repoList,
+			"tasks_started":     started,
+			"tasks_completed":   completed,
+			"total_commits":     totalCommits,
+			"files_touched":     len(allFiles),
+			"editing_minutes":   int(totalEditMin),
+			"verifying_minutes": int(totalVerifyMin),
+			"stuck_minutes":     int(totalStuckMin),
+			"tasks":             taskList,
+			"speed_score":       daySpeedScore,
+		})}
+	})
+}
+
+// --- ML socket handlers -----------------------------------------------------
+
+func registerMLHandlers(srv *socket.Server, engine *ml.Engine, dbPath string) {
+	// ml-status — health and loaded models.
+	srv.Handle("ml-status", func(ctx context.Context, _ socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"status": "disabled",
+			})}
+		}
+		err := engine.Ping(ctx)
+		status := "ok"
+		if err != nil {
+			status = "unreachable"
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"status": status,
+		})}
+	})
+
+	// ml-train — trigger retraining.
+	srv.Handle("ml-train", func(ctx context.Context, _ socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{Error: "ml engine is disabled"}
+		}
+		result, err := engine.Train(ctx, dbPath)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// ml-predict — run all predictions for current state.
+	srv.Handle("ml-predict", func(ctx context.Context, req socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{Error: "ml engine is disabled"}
+		}
+		var p struct {
+			Endpoint string         `json:"endpoint"`
+			Features map[string]any `json:"features"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		pred, err := engine.Predict(ctx, p.Endpoint, p.Features)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(pred)}
+	})
+}
+
+// --- ML adapter for task tracker -------------------------------------------
+
+// mlEngineAdapter wraps ml.Engine to satisfy task.MLPredictor.
+type mlEngineAdapter struct {
+	engine *ml.Engine
+}
+
+func (a *mlEngineAdapter) Predict(ctx context.Context, endpoint string, features map[string]any) (map[string]any, error) {
+	pred, err := a.engine.Predict(ctx, endpoint, features)
+	if err != nil {
+		return nil, err
+	}
+	return pred.Result, nil
+}
+
+func (a *mlEngineAdapter) Train(ctx context.Context, dbPath string) error {
+	_, err := a.engine.Train(ctx, dbPath)
+	return err
+}
+
+func (a *mlEngineAdapter) Enabled() bool {
+	return a.engine.Enabled()
 }
 
 // --- RSS monitor ------------------------------------------------------------

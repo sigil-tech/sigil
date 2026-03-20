@@ -40,3 +40,34 @@ CREATE TABLE IF NOT EXISTS patterns (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- Tracked development tasks for the task tracking system.
+CREATE TABLE IF NOT EXISTS tasks (
+    id           TEXT    PRIMARY KEY,
+    repo_root    TEXT    NOT NULL,
+    branch       TEXT    NOT NULL DEFAULT '',
+    phase        TEXT    NOT NULL DEFAULT 'idle',   -- idle | exploring | coding | testing | reviewing
+    files        TEXT    NOT NULL DEFAULT '{}',     -- JSON: path → edit count
+    started_at   INTEGER NOT NULL,                  -- Unix milliseconds
+    last_active  INTEGER NOT NULL,                  -- Unix milliseconds
+    completed_at INTEGER,                           -- Unix milliseconds, NULL while active
+    commit_count INTEGER NOT NULL DEFAULT 0,
+    test_runs    INTEGER NOT NULL DEFAULT 0,
+    test_fails   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks (phase);
+CREATE INDEX IF NOT EXISTS idx_tasks_started ON tasks (started_at);
+
+-- ML event log.  Tracks predictions, retrains, and other model lifecycle
+-- events for fleet-level ML usage reporting.
+CREATE TABLE IF NOT EXISTS ml_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT    NOT NULL,          -- "prediction" | "retrain" | ...
+    endpoint   TEXT    NOT NULL,          -- model endpoint or name
+    routing    TEXT    NOT NULL,          -- "local" | "cloud"
+    latency_ms INTEGER NOT NULL,
+    ts         INTEGER NOT NULL           -- Unix milliseconds
+);
+
+CREATE INDEX IF NOT EXISTS idx_ml_events_ts ON ml_events(ts);

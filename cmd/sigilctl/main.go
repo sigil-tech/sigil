@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -95,6 +96,12 @@ func run() error {
 		return cmdFleet(*socketPath, args)
 	case "credential":
 		return cmdCredential(*socketPath, args)
+	case "task":
+		return cmdTask(*socketPath, args)
+	case "day":
+		return cmdDay(*socketPath)
+	case "ml":
+		return cmdML(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
@@ -931,6 +938,9 @@ Commands:
   credential add <name>         Generate a new remote-access credential
   credential list               List all credentials
   credential revoke <name>      Revoke a credential immediately
+  task                          Show current inferred task
+  task history                  Recent task transitions
+  day                           Today's work summary
   purge                         Delete all local data (requires confirmation)
   export                        Export all data as newline-delimited JSON
 
@@ -938,4 +948,277 @@ Flags:
   -socket PATH    Unix socket path (default: $XDG_RUNTIME_DIR/sigild.sock)
   -db PATH        SQLite path for offline reads
 `)
+}
+
+// --- Task commands ----------------------------------------------------------
+
+func cmdTask(socketPath string, args []string) error {
+	if len(args) > 0 && args[0] == "history" {
+		return cmdTaskHistory(socketPath)
+	}
+
+	resp, err := call(socketPath, "task", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var t struct {
+		ID          string `json:"id"`
+		Phase       string `json:"phase"`
+		RepoRoot    string `json:"repo_root"`
+		Branch      string `json:"branch"`
+		ElapsedMin  int    `json:"elapsed_min"`
+		CommitCount int    `json:"commit_count"`
+		TestRuns    int    `json:"test_runs"`
+		TestFails   int    `json:"test_failures"`
+		Files       []struct {
+			Path  string `json:"path"`
+			Edits int    `json:"edits"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(resp.Payload, &t); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if t.Phase == "idle" {
+		fmt.Println("No active task (idle)")
+		return nil
+	}
+
+	repo := filepath.Base(t.RepoRoot)
+	fmt.Printf("Task: %s on %s (%s)\n", t.Phase, t.Branch, repo)
+	fmt.Printf("  Phase:    %s (%dm)\n", t.Phase, t.ElapsedMin)
+	if t.Branch != "" {
+		fmt.Printf("  Branch:   %s\n", t.Branch)
+	}
+	fmt.Printf("  Repo:     %s\n", t.RepoRoot)
+
+	if len(t.Files) > 0 {
+		fmt.Printf("  Files:    ")
+		for i, f := range t.Files {
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			fmt.Printf("%s (+%d)", filepath.Base(f.Path), f.Edits)
+			if i >= 4 {
+				fmt.Printf(" ... +%d more", len(t.Files)-5)
+				break
+			}
+		}
+		fmt.Println()
+	}
+	fmt.Printf("  Tests:    %d runs, %d failures\n", t.TestRuns, t.TestFails)
+	fmt.Printf("  Commits:  %d\n", t.CommitCount)
+	return nil
+}
+
+func cmdTaskHistory(socketPath string) error {
+	resp, err := call(socketPath, "task-history", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var tasks []struct {
+		ID        string `json:"id"`
+		Phase     string `json:"phase"`
+		RepoRoot  string `json:"repo_root"`
+		Branch    string `json:"branch"`
+		StartedAt string `json:"started_at"`
+		Commits   int    `json:"commits"`
+		Files     int    `json:"files"`
+	}
+	if err := json.Unmarshal(resp.Payload, &tasks); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("No task history")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tPHASE\tREPO\tBRANCH\tCOMMITS\tFILES")
+	for _, t := range tasks {
+		ts, _ := time.Parse(time.RFC3339, t.StartedAt)
+		repo := filepath.Base(t.RepoRoot)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+			ts.Format("15:04"), t.Phase, repo, t.Branch, t.Commits, t.Files)
+	}
+	return w.Flush()
+}
+
+func cmdDay(socketPath string) error {
+	resp, err := call(socketPath, "day-summary", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var d struct {
+		Date             string   `json:"date"`
+		Repos            []string `json:"repos"`
+		TasksStarted     int      `json:"tasks_started"`
+		TasksCompleted   int      `json:"tasks_completed"`
+		TotalCommits     int      `json:"total_commits"`
+		FilesTouched     int      `json:"files_touched"`
+		EditingMinutes   int      `json:"editing_minutes"`
+		VerifyingMinutes int      `json:"verifying_minutes"`
+		StuckMinutes     int      `json:"stuck_minutes"`
+		SpeedScore       float64  `json:"speed_score"`
+		Tasks            []struct {
+			Branch      string  `json:"branch"`
+			RepoRoot    string  `json:"repo_root"`
+			Phase       string  `json:"phase"`
+			DurationMin int     `json:"duration_min"`
+			Files       int     `json:"files"`
+			TotalEdits  int     `json:"total_edits"`
+			Commits     int     `json:"commits"`
+			TestRuns    int     `json:"test_runs"`
+			TestFails   int     `json:"test_failures"`
+			Completed   bool    `json:"completed"`
+			SpeedScore  float64 `json:"speed_score"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(resp.Payload, &d); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Today (%s)\n", d.Date)
+
+	if len(d.Repos) > 0 {
+		repos := make([]string, len(d.Repos))
+		for i, r := range d.Repos {
+			repos[i] = filepath.Base(r)
+		}
+		fmt.Printf("  Repos:     %s\n", strings.Join(repos, ", "))
+	}
+	fmt.Printf("  Tasks:     %d started, %d completed\n", d.TasksStarted, d.TasksCompleted)
+	fmt.Printf("  Commits:   %d\n", d.TotalCommits)
+	fmt.Printf("  Files:     %d touched\n", d.FilesTouched)
+	fmt.Printf("  Time:      editing %dm | verifying %dm | stuck %dm\n",
+		d.EditingMinutes, d.VerifyingMinutes, d.StuckMinutes)
+
+	if d.SpeedScore > 0 {
+		fmt.Printf("  Speed:     %.1f edits/min (size-weighted)\n", d.SpeedScore)
+	}
+
+	if len(d.Tasks) > 0 {
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  BRANCH\tPHASE\tTIME\tFILES\tCOMMITS\tTESTS")
+		for _, t := range d.Tasks {
+			status := t.Phase
+			if t.Completed {
+				status = "done"
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%dm\t%d\t%d\t%d/%d\n",
+				t.Branch, status, t.DurationMin, t.Files, t.Commits, t.TestRuns-t.TestFails, t.TestRuns)
+		}
+		w.Flush()
+	}
+	return nil
+}
+
+// --- ML commands -----------------------------------------------------------
+
+func cmdML(socketPath string, args []string) error {
+	if len(args) == 0 {
+		return cmdMLStatus(socketPath)
+	}
+	switch args[0] {
+	case "status":
+		return cmdMLStatus(socketPath)
+	case "train":
+		return cmdMLTrain(socketPath)
+	case "predict":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sigilctl ml predict <endpoint> [key=value ...]")
+		}
+		return cmdMLPredict(socketPath, args[1], args[2:])
+	default:
+		return fmt.Errorf("unknown ml subcommand %q — use: status, train, predict", args[0])
+	}
+}
+
+func cmdMLStatus(socketPath string) error {
+	resp, err := call(socketPath, "ml-status", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var s struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(resp.Payload, &s); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	fmt.Printf("ML engine: %s\n", s.Status)
+	return nil
+}
+
+func cmdMLTrain(socketPath string) error {
+	resp, err := call(socketPath, "ml-train", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Println("Training triggered")
+	return nil
+}
+
+func cmdMLPredict(socketPath string, endpoint string, kvPairs []string) error {
+	features := make(map[string]any)
+	for _, kv := range kvPairs {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		// Try to parse as number.
+		if f, err := strconv.ParseFloat(parts[1], 64); err == nil {
+			features[parts[0]] = f
+		} else {
+			features[parts[0]] = parts[1]
+		}
+	}
+
+	resp, err := call(socketPath, "ml-predict", map[string]any{
+		"endpoint": endpoint,
+		"features": features,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var pred struct {
+		Endpoint  string         `json:"endpoint"`
+		Result    map[string]any `json:"result"`
+		Routing   string         `json:"routing"`
+		LatencyMS int64          `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(resp.Payload, &pred); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	fmt.Printf("Endpoint:  %s\n", pred.Endpoint)
+	fmt.Printf("Routing:   %s\n", pred.Routing)
+	fmt.Printf("Latency:   %dms\n", pred.LatencyMS)
+	for k, v := range pred.Result {
+		fmt.Printf("  %s: %v\n", k, v)
+	}
+	return nil
 }
