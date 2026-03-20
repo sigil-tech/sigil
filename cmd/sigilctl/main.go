@@ -105,6 +105,8 @@ func run() error {
 		return cmdML(*socketPath, args)
 	case "plugin":
 		return cmdPlugin(args)
+	case "ask":
+		return cmdAsk(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
@@ -1311,5 +1313,37 @@ func cmdPluginListAvailable(args []string) error {
 			e.Name, e.Version, e.Category, e.Language, installed, e.Description)
 	}
 	w.Flush()
+	return nil
+}
+
+// --- Ask command -----------------------------------------------------------
+
+func cmdAsk(socketPath string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: sigilctl ask \"your question here\"")
+	}
+	query := strings.Join(args, " ")
+
+	resp, err := call(socketPath, "ask", map[string]string{"query": query})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		Answer        string `json:"answer"`
+		ToolCallsMade int    `json:"tool_calls_made"`
+		LatencyMS     int64  `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	fmt.Println(result.Answer)
+	if result.ToolCallsMade > 0 {
+		fmt.Printf("\n[%d tool calls, %dms]\n", result.ToolCallsMade, result.LatencyMS)
+	}
 	return nil
 }

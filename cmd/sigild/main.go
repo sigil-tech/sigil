@@ -40,6 +40,7 @@ import (
 	"github.com/wambozi/sigil/internal/event"
 	"github.com/wambozi/sigil/internal/fleet"
 	"github.com/wambozi/sigil/internal/inference"
+	"github.com/wambozi/sigil/internal/mcp"
 	"github.com/wambozi/sigil/internal/ml"
 	"net/http"
 
@@ -305,6 +306,33 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg)
 	registerTaskHandlers(srv, taskTracker, db)
 	registerMLHandlers(srv, mlEngine, cfg.dbPath)
+
+	// --- MCP Tool Registry + Ask Handler ------------------------------------
+	mcpRegistry := mcp.NewRegistry()
+	mcp.RegisterStoreTools(mcpRegistry, db)
+
+	srv.Handle("ask", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Query == "" {
+			return socket.Response{Error: "query is required"}
+		}
+
+		result, err := mcpRegistry.RunToolLoop(ctx, &mcpEngineAdapter{engine}, p.Query)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"answer":          result.Answer,
+			"tool_calls_made": result.ToolCallsMade,
+			"latency_ms":      result.TotalLatencyMS,
+		})}
+	})
 
 	// Wire suggestion push via the notifier's OnSuggestion callback.
 	// Every suggestion that passes the confidence gate is fanned out to any
@@ -1160,6 +1188,50 @@ func registerMLHandlers(srv *socket.Server, engine *ml.Engine, dbPath string) {
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(pred)}
 	})
+}
+
+// --- MCP engine adapter ----------------------------------------------------
+
+// mcpEngineAdapter wraps inference.Engine to satisfy mcp.ToolEngine.
+type mcpEngineAdapter struct {
+	engine *inference.Engine
+}
+
+func (a *mcpEngineAdapter) CompleteWithTools(ctx context.Context, messages []mcp.Message, tools []mcp.ToolDef) (*mcp.ToolEngineResult, error) {
+	chatMsgs := make([]inference.ChatMessage, len(messages))
+	for i, m := range messages {
+		chatMsgs[i] = inference.ChatMessage{
+			Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID, Name: m.Name,
+		}
+		for _, tc := range m.ToolCalls {
+			chatMsgs[i].ToolCalls = append(chatMsgs[i].ToolCalls, inference.ChatToolCall{
+				ID: tc.ID, Type: tc.Type,
+				Function: inference.ChatToolCallFunc{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+			})
+		}
+	}
+	chatTools := make([]inference.ChatToolDef, len(tools))
+	for i, t := range tools {
+		chatTools[i] = inference.ChatToolDef{
+			Type: t.Type,
+			Function: inference.ChatToolDefFunc{
+				Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters,
+			},
+		}
+	}
+	result, err := a.engine.CompleteWithTools(ctx, chatMsgs, chatTools)
+	if err != nil {
+		return nil, err
+	}
+	out := &mcp.ToolEngineResult{Content: result.Content, Routing: result.Routing, LatencyMS: result.LatencyMS}
+	for _, tc := range result.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, mcp.ToolCall{
+			ID: tc.ID, Type: tc.Type,
+			Function: mcp.ToolCallFunc{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+		})
+	}
+	return out, nil
 }
 
 // --- ML adapter for task tracker -------------------------------------------
