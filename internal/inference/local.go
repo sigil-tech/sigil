@@ -53,7 +53,7 @@ func NewLocal(cfg LocalConfig, log *slog.Logger) (*LocalBackend, error) {
 	l := &LocalBackend{
 		baseURL: url,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 5 * time.Minute, // local LLM on CPU with tools can be slow
 		},
 		log:       log,
 		cfg:       cfg,
