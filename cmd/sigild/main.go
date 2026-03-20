@@ -261,6 +261,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	// Wire ML into the task tracker for predictions and retraining.
 	if mlEngine.Enabled() {
+		mlEngine.SetStore(db)
 		taskTracker.SetMLEngine(&mlEngineAdapter{mlEngine}, cfg.dbPath, cfg.fileCfg.ML.RetrainEvery)
 	}
 
