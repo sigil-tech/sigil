@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 func TestGitSource_Name(t *testing.T) {

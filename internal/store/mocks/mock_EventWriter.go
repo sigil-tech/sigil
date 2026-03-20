@@ -6,9 +6,9 @@ import (
 	context "context"
 
 	mock "github.com/stretchr/testify/mock"
-	event "github.com/wambozi/sigil/internal/event"
+	event "github.com/sigil-tech/sigil/internal/event"
 
-	store "github.com/wambozi/sigil/internal/store"
+	store "github.com/sigil-tech/sigil/internal/store"
 
 	time "time"
 )

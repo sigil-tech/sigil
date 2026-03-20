@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // mockInserter records every event passed to InsertEvent.

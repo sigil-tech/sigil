@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // AutoTestActuator watches file events and automatically runs the project's

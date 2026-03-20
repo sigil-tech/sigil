@@ -138,4 +138,4 @@ the aggregated summary described above is sent.
 
 ## Questions or concerns
 
-Open an issue at <https://github.com/wambozi/sigil/issues>.
+Open an issue at <https://github.com/sigil-tech/sigil/issues>.

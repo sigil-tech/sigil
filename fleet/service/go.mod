@@ -1,4 +1,4 @@
-module github.com/wambozi/sigil/fleet/service
+module github.com/sigil-tech/sigil/fleet/service
 
 go 1.23
 

@@ -2,13 +2,13 @@
 # install.sh — one-line installer for Sigil OS daemon
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/wambozi/sigil/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/sigil-tech/sigil/main/scripts/install.sh | bash
 #
 # Supports: linux/amd64, linux/arm64
 
 set -euo pipefail
 
-REPO="wambozi/sigil"
+REPO="sigil-tech/sigil"
 INSTALL_DIR="${HOME}/.local/bin"
 API_BASE="https://api.github.com/repos/${REPO}"
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"

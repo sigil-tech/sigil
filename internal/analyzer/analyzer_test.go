@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 func openMemoryStore(t *testing.T) *store.Store {

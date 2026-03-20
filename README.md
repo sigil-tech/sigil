@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://sigilos.io">Website</a> · <a href="https://github.com/wambozi/sigil/discussions">Discussions</a> · <a href="PRIVACY.md">Privacy</a> · <a href="CONTRIBUTING.md">Contributing</a>
+  <a href="https://sigilos.io">Website</a> · <a href="https://github.com/sigil-tech/sigil/discussions">Discussions</a> · <a href="PRIVACY.md">Privacy</a> · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/wambozi/sigil/actions/workflows/release.yml"><img src="https://github.com/wambozi/sigil/actions/workflows/release.yml/badge.svg" alt="Build" /></a>
-  <a href="https://github.com/wambozi/sigil/actions/workflows/ci.yml"><img src="https://github.com/wambozi/sigil/actions/workflows/ci.yml/badge.svg" alt="Tests" /></a>
+  <a href="https://github.com/sigil-tech/sigil/actions/workflows/release.yml"><img src="https://github.com/sigil-tech/sigil/actions/workflows/release.yml/badge.svg" alt="Build" /></a>
+  <a href="https://github.com/sigil-tech/sigil/actions/workflows/ci.yml"><img src="https://github.com/sigil-tech/sigil/actions/workflows/ci.yml/badge.svg" alt="Tests" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0" /></a>
 </p>
 
@@ -60,7 +60,7 @@ something useful.
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap wambozi/sigil
+brew tap sigil-tech/sigil
 brew install sigil
 sigild init     # config, shell hooks, launchd (macOS) / systemd (Linux)
 ```
@@ -70,7 +70,7 @@ After init, open a new terminal to activate the shell hook.
 ### One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wambozi/sigil/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sigil-tech/sigil/main/scripts/install.sh | bash
 ```
 
 ### Build from source
@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/wambozi/sigil/main/scripts/install.
 Requires Go 1.22+.
 
 ```bash
-git clone https://github.com/wambozi/sigil.git && cd sigil
+git clone https://github.com/sigil-tech/sigil.git && cd sigil
 make install    # builds, installs to $GOPATH/bin, prints next step
 sigild init     # config, shell hooks, launchd (macOS) / systemd (Linux)
 ```
@@ -174,7 +174,7 @@ and opt-out instructions.
 ## Contributing
 
 Sigil is early. If you're curious, the best way to get involved is to join
-[Discussions](https://github.com/wambozi/sigil/discussions) — ask questions,
+[Discussions](https://github.com/sigil-tech/sigil/discussions) — ask questions,
 share ideas, follow along. For code contributions, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

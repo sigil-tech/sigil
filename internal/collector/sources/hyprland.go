@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // HyprlandSource connects to the Hyprland compositor's IPC socket and emits

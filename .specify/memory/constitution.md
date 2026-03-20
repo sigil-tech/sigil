@@ -290,7 +290,7 @@ alone is insufficient, and what the maintenance risk is.
 
 ## Governance
 
-This constitution governs all development on the `wambozi/sigil` and `wambozi/sigil-os`
+This constitution governs all development on the `sigil-tech/sigil` and `sigil-tech/sigil-os`
 repositories. It supersedes ad-hoc practices and governs AI agent behavior during
 spec-driven development. Amendments require documentation of rationale, review by the
 project maintainer, and a version bump below.

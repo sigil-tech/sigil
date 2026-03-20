@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // FleetReport is the anonymized aggregate payload sent to the Fleet Aggregation Layer.

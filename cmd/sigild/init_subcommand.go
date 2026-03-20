@@ -11,9 +11,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/wambozi/sigil/internal/assets"
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/assets"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/inference"
 )
 
 // runInit implements the "sigild init" subcommand.

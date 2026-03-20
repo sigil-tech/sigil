@@ -3,8 +3,8 @@
 package main
 
 import (
-	"github.com/wambozi/sigil/internal/collector"
-	"github.com/wambozi/sigil/internal/collector/sources"
+	"github.com/sigil-tech/sigil/internal/collector"
+	"github.com/sigil-tech/sigil/internal/collector/sources"
 )
 
 // addPlatformSources registers macOS-specific collector sources.

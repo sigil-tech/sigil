@@ -1,4 +1,4 @@
-module github.com/wambozi/sigil
+module github.com/sigil-tech/sigil
 
 go 1.24
 

@@ -6,15 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Sigil (`sigild`) is a self-tuning intelligence layer for software engineers. It runs as a background daemon observing workflow signals (file edits, terminal commands, git activity, process state, window focus), stores everything locally in SQLite, detects patterns via heuristics + optional LLM, and surfaces suggestions as desktop notifications. `sigilctl` is the CLI client.
 
-**Repo:** `wambozi/sigil` — Go 1.24, pure Go SQLite (no CGo).
+**Repo:** `sigil-tech/sigil` — Go 1.24, pure Go SQLite (no CGo).
 
 ## Build & Test
 
 ```bash
-make build                    # build sigild + sigilctl
+make build                    # sync embedded assets, build sigild + sigilctl
 make check                    # fmt + vet + test (use before committing)
 make run                      # build & run with dev.toml (watches ~/workspace)
 make generate                 # re-generate mocks via mockery
+make coverage                 # run tests with coverage, enforces 50% minimum gate
+make install                  # build + install to $GOPATH/bin + run sigild init
+make sync-assets              # copy shell hooks + systemd service into embed dir
 
 go test ./internal/analyzer/                          # single package
 go test -run TestDetectEditThenTest ./internal/analyzer/  # single test
@@ -50,6 +53,10 @@ store (imports event)
   ↑
 inference (no internal imports — isolated backends)
   ↑
+task (imports event — task lifecycle state machine)
+  ↑
+ml (no internal imports — ML sidecar management)
+  ↑
 collector (imports event; defines Source interface)
   ↑
 notifier (imports store interfaces)
@@ -59,6 +66,8 @@ analyzer (imports event, store, inference, notifier)
 actuator (imports event; defines own StoreWriter interface)
   ↑
 fleet (imports event, store, config)
+  ↑
+network (no internal imports — TCP+TLS transport for remote connections)
   ↑
 socket (no internal imports — pure protocol)
   ↑
@@ -125,6 +134,21 @@ npm run package                   # produce .vsix
 ```
 
 When the extension is connected, desktop notifications are automatically suppressed (single-channel routing via `HasExternalSurface` on the notifier).
+
+## Embedded Assets
+
+Shell hooks (`scripts/shell-hook.{bash,zsh}`) and the systemd service (`deploy/sigild.service`) are embedded into the binary via `internal/assets/embed.go`. Run `make sync-assets` (or `make build`, which calls it) to copy source files into the embed directory. The `sigild init` subcommand writes these assets to the user's system.
+
+## Platform-Specific Code
+
+`cmd/sigild/` contains build-tagged files for platform differences:
+- `rss_darwin.go` / `rss_linux.go` / `rss_other.go` — RSS memory reporting
+- `sources_darwin.go` / `sources_other.go` — Platform-specific source detection
+- `internal/collector/sources/` — `process_linux.go` / `process_darwin.go` for OS-specific process monitoring
+
+## Constitution
+
+`.specify/memory/constitution.md` is the canonical governance document defining privacy boundaries, architectural constraints (DAG, interfaces), Go code standards, test coverage minimums (50%), and documentation requirements. Consult it for design decisions.
 
 ## Community & Governance Files
 
