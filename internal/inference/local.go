@@ -322,6 +322,59 @@ func (l *LocalBackend) Complete(ctx context.Context, system, user string) (*Comp
 	}, nil
 }
 
+// CompleteWithTools sends a tool-calling chat completion request to the local server.
+func (l *LocalBackend) CompleteWithTools(ctx context.Context, messages []ChatMessage, tools []ChatToolDef) (*ToolCompletionResult, error) {
+	type toolRequest struct {
+		Model    string        `json:"model"`
+		Messages []ChatMessage `json:"messages"`
+		Tools    []ChatToolDef `json:"tools,omitempty"`
+	}
+
+	body, err := json.Marshal(toolRequest{
+		Model:    "local",
+		Messages: messages,
+		Tools:    tools,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inference/local: marshal: %w", err)
+	}
+
+	url := l.baseURL + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("inference/local: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	resp, err := l.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("inference/local: request: %w", err)
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start).Milliseconds()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("inference/local: HTTP %d: %s", resp.StatusCode, raw)
+	}
+
+	var cr chatResponseWithTools
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return nil, fmt.Errorf("inference/local: decode: %w", err)
+	}
+	if len(cr.Choices) == 0 {
+		return nil, fmt.Errorf("inference/local: empty choices")
+	}
+
+	return &ToolCompletionResult{
+		Content:   cr.Choices[0].Message.Content,
+		ToolCalls: cr.Choices[0].Message.ToolCalls,
+		Routing:   "local",
+		LatencyMS: elapsed,
+	}, nil
+}
+
 // Ping checks whether the local server is healthy.
 func (l *LocalBackend) Ping(ctx context.Context) error {
 	url := l.baseURL + "/health"

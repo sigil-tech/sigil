@@ -43,6 +43,9 @@ type EventReader interface {
 	QueryGitEvents(ctx context.Context, since time.Time) ([]event.Event, error)
 	QueryTaskMetrics(ctx context.Context, since time.Time) (TaskMetrics, error)
 	QueryMLStats(ctx context.Context, since time.Time) (MLStats, error)
+	QueryLatestPrediction(ctx context.Context, model string) (*PredictionRecord, error)
+	QueryPredictions(ctx context.Context, model string, since time.Time) ([]PredictionRecord, error)
+	QueryPluginEvents(ctx context.Context, pluginName string, since time.Time, limit int) ([]PluginEventRecord, error)
 }
 
 // EventWriter is the write subset of Store used by the collector and notifier.
@@ -58,6 +61,7 @@ type EventWriter interface {
 	InsertTask(ctx context.Context, t TaskRecord) error
 	UpdateTask(ctx context.Context, t TaskRecord) error
 	InsertMLEvent(ctx context.Context, kind, endpoint, routing string, latencyMS int64) error
+	InsertPrediction(ctx context.Context, model, result string, confidence float64, expiresAt *time.Time) error
 }
 
 // ReadWriter combines EventReader and EventWriter for components that need both.
@@ -782,6 +786,106 @@ type PluginEventRecord struct {
 	Timestamp   time.Time
 }
 
+// --- ML Predictions --------------------------------------------------------
+
+// InsertPrediction persists an ML prediction result.
+func (s *Store) InsertPrediction(ctx context.Context, model, result string, confidence float64, expiresAt *time.Time) error {
+	now := time.Now().UnixMilli()
+	var expires sql.NullInt64
+	if expiresAt != nil {
+		expires = sql.NullInt64{Int64: expiresAt.UnixMilli(), Valid: true}
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ml_predictions (model, result, confidence, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		model, result, confidence, now, expires,
+	)
+	return err
+}
+
+// QueryLatestPrediction returns the most recent non-expired prediction for the
+// given model, or nil,nil if no matching row exists.
+func (s *Store) QueryLatestPrediction(ctx context.Context, model string) (*PredictionRecord, error) {
+	now := time.Now().UnixMilli()
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, model, result, confidence, created_at, expires_at
+		 FROM ml_predictions
+		 WHERE model = ? AND (expires_at IS NULL OR expires_at > ?)
+		 ORDER BY created_at DESC LIMIT 1`,
+		model, now,
+	)
+
+	var (
+		p         PredictionRecord
+		resultStr string
+		createdMS int64
+		expiresMS sql.NullInt64
+	)
+	if err := row.Scan(&p.ID, &p.Model, &resultStr, &p.Confidence, &createdMS, &expiresMS); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: query latest prediction: %w", err)
+	}
+	if err := json.Unmarshal([]byte(resultStr), &p.Result); err != nil {
+		return nil, fmt.Errorf("store: unmarshal prediction result: %w", err)
+	}
+	p.CreatedAt = time.UnixMilli(createdMS)
+	if expiresMS.Valid {
+		t := time.UnixMilli(expiresMS.Int64)
+		p.ExpiresAt = &t
+	}
+	return &p, nil
+}
+
+// QueryPredictions returns all predictions for the given model created at or
+// after since, ordered by created_at descending.
+func (s *Store) QueryPredictions(ctx context.Context, model string, since time.Time) ([]PredictionRecord, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, model, result, confidence, created_at, expires_at
+		 FROM ml_predictions
+		 WHERE model = ? AND created_at >= ?
+		 ORDER BY created_at DESC`,
+		model, since.UnixMilli(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query predictions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PredictionRecord
+	for rows.Next() {
+		var (
+			p         PredictionRecord
+			resultStr string
+			createdMS int64
+			expiresMS sql.NullInt64
+		)
+		if err := rows.Scan(&p.ID, &p.Model, &resultStr, &p.Confidence, &createdMS, &expiresMS); err != nil {
+			return nil, fmt.Errorf("store: scan prediction: %w", err)
+		}
+		if err := json.Unmarshal([]byte(resultStr), &p.Result); err != nil {
+			return nil, fmt.Errorf("store: unmarshal prediction result: %w", err)
+		}
+		p.CreatedAt = time.UnixMilli(createdMS)
+		if expiresMS.Valid {
+			t := time.UnixMilli(expiresMS.Int64)
+			p.ExpiresAt = &t
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PredictionRecord represents a stored ML prediction.
+type PredictionRecord struct {
+	ID         int64
+	Model      string
+	Result     map[string]any
+	Confidence float64
+	CreatedAt  time.Time
+	ExpiresAt  *time.Time
+}
+
 // QueryTaskMetrics computes aggregated task lifecycle metrics since the given time.
 func (s *Store) QueryTaskMetrics(ctx context.Context, since time.Time) (TaskMetrics, error) {
 	sinceMS := since.UnixMilli()
@@ -1008,6 +1112,17 @@ CREATE TABLE IF NOT EXISTS ml_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ml_events_ts ON ml_events(ts);
 
+CREATE TABLE IF NOT EXISTS ml_predictions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    model      TEXT NOT NULL,
+    result     TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ml_predictions_model ON ml_predictions(model);
+CREATE INDEX IF NOT EXISTS idx_ml_predictions_created ON ml_predictions(created_at);
+
 CREATE TABLE IF NOT EXISTS plugin_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     plugin      TEXT NOT NULL,
@@ -1028,7 +1143,7 @@ CREATE INDEX IF NOT EXISTS idx_plugin_events_ts ON plugin_events(ts);`
 // Purge deletes all rows from all tables and then removes the SQLite database
 // file from disk.  The Store must not be used after calling Purge.
 func (s *Store) Purge() error {
-	tables := []string{"plugin_events", "ml_events", "tasks", "feedback", "suggestions", "patterns", "ai_interactions", "events"}
+	tables := []string{"plugin_events", "ml_predictions", "ml_events", "tasks", "feedback", "suggestions", "patterns", "ai_interactions", "events"}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
 			return fmt.Errorf("store: purge table %s: %w", t, err)
