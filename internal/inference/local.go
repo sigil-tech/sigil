@@ -271,6 +271,14 @@ func (l *LocalBackend) killProcess() {
 	}
 }
 
+// modelName returns the model identifier for API requests.
+func (l *LocalBackend) modelName() string {
+	if l.cfg.ModelName != "" {
+		return l.cfg.ModelName
+	}
+	return "local"
+}
+
 // Complete sends a chat completion request to the local server.
 func (l *LocalBackend) Complete(ctx context.Context, system, user string) (*CompletionResult, error) {
 	msgs := make([]chatMessage, 0, 2)
@@ -280,7 +288,7 @@ func (l *LocalBackend) Complete(ctx context.Context, system, user string) (*Comp
 	msgs = append(msgs, chatMessage{Role: "user", Content: user})
 
 	body, err := json.Marshal(chatRequest{
-		Model:    "local",
+		Model:    l.modelName(),
 		Messages: msgs,
 	})
 	if err != nil {
@@ -331,7 +339,7 @@ func (l *LocalBackend) CompleteWithTools(ctx context.Context, messages []ChatMes
 	}
 
 	body, err := json.Marshal(toolRequest{
-		Model:    "local",
+		Model:    l.modelName(),
 		Messages: messages,
 		Tools:    tools,
 	})
@@ -376,21 +384,24 @@ func (l *LocalBackend) CompleteWithTools(ctx context.Context, messages []ChatMes
 }
 
 // Ping checks whether the local server is healthy.
+// Tries /health (llama-server) first, falls back to / (Ollama).
 func (l *LocalBackend) Ping(ctx context.Context) error {
-	url := l.baseURL + "/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
+	for _, path := range []string{"/health", "/"} {
+		url := l.baseURL + path
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := l.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("inference/local: ping: %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
 	}
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("inference/local: ping: %w", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("inference/local: ping returned HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return fmt.Errorf("inference/local: ping failed on all health endpoints")
 }
 
 // Stop shuts down the local backend. If we started llama-server, kills it.

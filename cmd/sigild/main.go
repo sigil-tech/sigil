@@ -179,6 +179,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 			ServerURL: cfg.fileCfg.Inference.Local.ServerURL,
 			ServerBin: cfg.fileCfg.Inference.Local.ServerBin,
 			ModelPath: cfg.fileCfg.Inference.Local.ModelPath,
+			ModelName: cfg.fileCfg.Inference.Local.ModelName,
 			CtxSize:   cfg.fileCfg.Inference.Local.CtxSize,
 			GPULayers: cfg.fileCfg.Inference.Local.GPULayers,
 		},

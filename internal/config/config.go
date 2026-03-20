@@ -105,6 +105,7 @@ type InferenceLocalConfig struct {
 	ServerURL string `toml:"server_url"`
 	ServerBin string `toml:"server_bin"`
 	ModelPath string `toml:"model_path"`
+	ModelName string `toml:"model_name"`
 	CtxSize   int    `toml:"ctx_size"`
 	GPULayers int    `toml:"gpu_layers"`
 }
@@ -243,6 +244,9 @@ func merge(dst, src *Config) {
 	}
 	if src.Inference.Local.ModelPath != "" {
 		dst.Inference.Local.ModelPath = src.Inference.Local.ModelPath
+	}
+	if src.Inference.Local.ModelName != "" {
+		dst.Inference.Local.ModelName = src.Inference.Local.ModelName
 	}
 	if src.Inference.Local.CtxSize != 0 {
 		dst.Inference.Local.CtxSize = src.Inference.Local.CtxSize
