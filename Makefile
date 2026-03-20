@@ -28,6 +28,7 @@ build: sync-assets
 	$(GO) build ./plugins/sigil-plugin-github/
 	$(GO) build ./plugins/sigil-plugin-jira/
 	$(GO) build ./plugins/sigil-plugin-vscode/
+	$(GO) build ./plugins/sigil-plugin-jetbrains/
 
 ## sync-assets copies shell hooks and service files into the embed directory
 ## so go:embed can bundle them into the binary.

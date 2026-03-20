@@ -105,6 +105,17 @@ var registry = []RegistryEntry{
 		Binary:      "sigil-plugin-vscode",
 		HasSetup:    true,
 	},
+	{
+		Name:        "jetbrains",
+		Description: "JetBrains IDEs — PyCharm, GoLand, IntelliJ, WebStorm, all in one",
+		Version:     "v1",
+		Category:    "ide",
+		Language:    "go",
+		GoModule:    "", // ships with sigild
+		BrewFormula: "",
+		Binary:      "sigil-plugin-jetbrains",
+		HasSetup:    false,
+	},
 
 	// ── v2: Full Team Workflow ─────────────────────────────────────────
 	{
