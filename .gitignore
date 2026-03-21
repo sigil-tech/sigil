@@ -6,9 +6,12 @@ result-*
 .direnv
 *.iso
 *.exe
+/bin/
 /sigilctl
 /sigild
+/sigil-plugin-*
 cover.out
+coverage.out
 dev.toml
 .specify/templates
 specs
