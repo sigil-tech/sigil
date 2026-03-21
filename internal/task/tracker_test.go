@@ -908,8 +908,8 @@ func TestCompleteCurrentTask_retrainError_nocrash(t *testing.T) {
 
 	errored := make(chan struct{}, 1)
 	pred := &mockMLPredictor{
-		enabled: true,
-		trainFn: func() { errored <- struct{}{} },
+		enabled:  true,
+		trainFn:  func() { errored <- struct{}{} },
 		trainErr: errors.New("retrain failed"),
 	}
 	tr.SetMLEngine(pred, "/tmp/sigil.db", 1)
@@ -943,7 +943,7 @@ func TestProcess_mlPredictorNoProbabilityKey(t *testing.T) {
 	tr := mlVerifyingTask(t, m, 1)
 
 	pred := &mockMLPredictor{
-		enabled:       true,
+		enabled:         true,
 		wrongTypeResult: true,
 	}
 	tr.SetMLEngine(pred, "/tmp/sigil.db", 0)

@@ -42,7 +42,6 @@ func TestRegistry_Register(t *testing.T) {
 	assert.Equal(t, "tool_b", tools[1].Name)
 }
 
-
 func TestRegistry_Execute_KnownTool(t *testing.T) {
 	r := NewRegistry()
 	r.Register(Tool{
