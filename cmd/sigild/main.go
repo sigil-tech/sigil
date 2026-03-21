@@ -444,6 +444,66 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(pluginMgr.Plugins())}
 	})
 
+	// --- Task transition → LLM suggestion → plugin action ------------------
+	taskTracker.OnTransition = func(oldPhase, newPhase task.Phase, t *task.Task) {
+		// Only act on significant transitions.
+		if newPhase != task.PhaseIdle && newPhase != task.PhaseStuck {
+			return
+		}
+
+		level := ntf.Level()
+
+		// Level 0-1: silent, no LLM call.
+		if level < notifier.LevelAmbient {
+			return
+		}
+
+		// Build a query based on the transition.
+		var query string
+		switch {
+		case oldPhase != task.PhaseIdle && newPhase == task.PhaseIdle:
+			query = fmt.Sprintf(
+				"The engineer just completed a task on branch '%s' in %s. "+
+					"What should they work on next? Check their sprint backlog, open PRs, and recent task history. "+
+					"Be concise — one paragraph max.",
+				t.Branch, filepath.Base(t.RepoRoot))
+		case newPhase == task.PhaseStuck:
+			query = fmt.Sprintf(
+				"The engineer is stuck on branch '%s' in %s — %d consecutive test failures. "+
+					"What should they try? Check the recent errors and suggest a different approach. "+
+					"Be concise.",
+				t.Branch, filepath.Base(t.RepoRoot), t.TestFailures)
+		default:
+			return
+		}
+
+		// Ask the LLM with MCP tools.
+		ctx := context.Background()
+		result, err := mcpRegistry.RunToolLoop(ctx, &mcpEngineAdapter{engine}, query)
+		if err != nil {
+			log.Warn("transition suggestion: LLM failed", "err", err)
+			return
+		}
+
+		suggestion := notifier.Suggestion{
+			Category:   "task_transition",
+			Confidence: notifier.ConfidenceModerate,
+			Title:      "Sigil",
+			Body:       result.Answer,
+		}
+
+		// Level 3+: check if claude plugin can launch a session.
+		if level >= notifier.LevelConversational {
+			suggestion.ActionCmd = fmt.Sprintf(
+				`sigil-plugin-claude launch --prompt %q --cwd %q`,
+				result.Answer, t.RepoRoot)
+		}
+
+		ntf.Surface(suggestion)
+		log.Info("transition suggestion surfaced",
+			"phase", newPhase, "tools", result.ToolCallsMade, "level", level)
+	}
+
 	// --- Credential store (always initialised; handlers registered below) ---
 	credStore := network.NewCredentialStore()
 	credsPath := filepath.Join(networkDataDir(), "credentials.json")
