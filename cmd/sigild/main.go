@@ -865,6 +865,43 @@ func registerHandlers(
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
 
+	// correct — write an ml_correction event for a misclassified event.
+	// Payload: {"event_id": 12345, "correct_category": "researching"}
+	srv.Handle("correct", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			EventID         int64  `json:"event_id"`
+			CorrectCategory string `json:"correct_category"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.EventID <= 0 {
+			return socket.Response{Error: "event_id must be a positive integer"}
+		}
+		validCategories := map[string]bool{
+			"creating": true, "refining": true, "verifying": true, "navigating": true,
+			"researching": true, "integrating": true, "communicating": true, "idle": true,
+		}
+		if !validCategories[p.CorrectCategory] {
+			return socket.Response{Error: fmt.Sprintf("invalid category %q — valid: creating, refining, verifying, navigating, researching, integrating, communicating, idle", p.CorrectCategory)}
+		}
+
+		err := db.InsertEvent(ctx, event.Event{
+			Kind:   "ml_correction",
+			Source: "sigilctl",
+			Payload: map[string]any{
+				"event_id":         p.EventID,
+				"correct_category": p.CorrectCategory,
+			},
+			Timestamp: time.Now(),
+		})
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("insert correction: %s", err)}
+		}
+		log.Info("correction recorded", "event_id", p.EventID, "category", p.CorrectCategory)
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
+	})
+
 	// config — return the resolved runtime configuration as JSON.
 	// Sensitive fields (API keys / tokens) are masked with "***".
 	srv.Handle("config", func(ctx context.Context, _ socket.Request) socket.Response {
