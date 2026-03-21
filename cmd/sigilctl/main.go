@@ -107,6 +107,8 @@ func run() error {
 		return cmdPlugin(args)
 	case "ask":
 		return cmdAsk(*socketPath, args)
+	case "correct":
+		return cmdCorrect(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
@@ -1345,5 +1347,31 @@ func cmdAsk(socketPath string, args []string) error {
 	if result.ToolCallsMade > 0 {
 		fmt.Printf("\n[%d tool calls, %dms]\n", result.ToolCallsMade, result.LatencyMS)
 	}
+	return nil
+}
+
+// --- Correct command -------------------------------------------------------
+
+func cmdCorrect(socketPath string, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: sigilctl correct <event_id> <category>\n  categories: creating, refining, verifying, navigating, researching, integrating, communicating, idle")
+	}
+
+	eventID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid event_id %q: %w", args[0], err)
+	}
+
+	resp, err := call(socketPath, "correct", map[string]any{
+		"event_id":         eventID,
+		"correct_category": args[1],
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Printf("Correction recorded: event %d → %s\n", eventID, args[1])
 	return nil
 }
