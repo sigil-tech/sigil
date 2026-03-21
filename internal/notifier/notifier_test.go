@@ -40,10 +40,10 @@ func (p *stubPlatform) Execute(_ string) error   { return nil }
 
 func TestRateLimit_burstSuppressed(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -61,10 +61,10 @@ func TestRateLimit_burstSuppressed(t *testing.T) {
 
 func TestRateLimit_afterIntervalSucceeds(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -79,10 +79,10 @@ func TestRateLimit_afterIntervalSucceeds(t *testing.T) {
 
 func TestRateLimit_conversationalInterval(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelConversational,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -142,10 +142,10 @@ func TestSurface_ambientStoresEvenWhenRateLimited(t *testing.T) {
 
 func TestSetLevel_and_Level(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -172,10 +172,10 @@ func TestSurface_silent(t *testing.T) {
 	db := openTestStore(t)
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelSilent,
-		store:       db,
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelSilent,
+		store:             db,
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -207,10 +207,10 @@ func TestSurface_silent(t *testing.T) {
 func TestSurface_digest(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -237,10 +237,10 @@ func TestSurface_digest(t *testing.T) {
 func TestFlushDigest(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -266,10 +266,10 @@ func TestFlushDigest(t *testing.T) {
 func TestFlushDigest_empty(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -286,10 +286,10 @@ func TestFlushDigest_empty(t *testing.T) {
 func TestSurface_conversational(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelConversational,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -319,10 +319,10 @@ func TestSurface_conversational(t *testing.T) {
 func TestSurface_lowConfidence_noCallback(t *testing.T) {
 	called := false
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
@@ -352,10 +352,10 @@ func TestSurface_OnSuggestionCallback(t *testing.T) {
 	)
 
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(id int64, sg Suggestion) {
@@ -395,10 +395,10 @@ func TestSurface_OnSuggestionCallback(t *testing.T) {
 func TestSurface_conversationalRateLimitSuppressed(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelConversational,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -441,10 +441,10 @@ func TestSurface_conversationalRateLimitSuppressed(t *testing.T) {
 func TestSurface_autonomousLowConfidence(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAutonomous,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -473,10 +473,10 @@ func TestSurface_autonomousLowConfidence(t *testing.T) {
 func TestSurface_autonomousNoActionCmd(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
+		level:             LevelAutonomous,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -516,10 +516,10 @@ func TestExecuteWithCountdown_success(t *testing.T) {
 
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelAutonomous,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -562,10 +562,10 @@ func TestExecuteWithCountdown_executeFailure(t *testing.T) {
 
 	platform := &errPlatform{}
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelAutonomous,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 	}
@@ -605,10 +605,10 @@ func TestSurface_suppressesDesktopWhenExternalSurfaceActive(t *testing.T) {
 	platform := &stubPlatform{}
 	var callbackCalled bool
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
@@ -678,10 +678,10 @@ func TestSurface_resumesDesktopWhenNoExternalSurface(t *testing.T) {
 func TestSurface_nilHasExternalSurface(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
 		lastShownAt:       make(map[Level]time.Time),
 		recentSuggestions: make(map[string]time.Time),
 		// HasExternalSurface intentionally nil — backwards compat

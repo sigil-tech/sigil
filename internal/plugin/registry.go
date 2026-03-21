@@ -5,16 +5,16 @@ package plugin
 
 // RegistryEntry describes a plugin available for installation.
 type RegistryEntry struct {
-	Name        string       `json:"name"`         // short identifier (e.g. "claude", "jira")
+	Name        string       `json:"name"` // short identifier (e.g. "claude", "jira")
 	Description string       `json:"description"`
-	Version     string       `json:"version"`       // roadmap version: "v1", "v2", "v3", "v4", "v5", "vX"
-	Category    string       `json:"category"`      // "ai", "scrum", "scm", "ci", "knowledge", "communication", "observability", "security", "ide"
-	Language    string       `json:"language"`       // "go", "shell", "python"
-	GoModule    string       `json:"go_module"`      // go install path (primary install method)
-	BrewFormula string       `json:"brew_formula"`   // homebrew formula (alternative)
-	Binary      string       `json:"binary"`         // expected binary name in PATH after install
-	HasSetup    bool         `json:"has_setup"`      // plugin binary supports "install" subcommand
-	EnvVars     []EnvVarSpec `json:"env_vars"`       // required/optional env vars for configuration
+	Version     string       `json:"version"`      // roadmap version: "v1", "v2", "v3", "v4", "v5", "vX"
+	Category    string       `json:"category"`     // "ai", "scrum", "scm", "ci", "knowledge", "communication", "observability", "security", "ide"
+	Language    string       `json:"language"`     // "go", "shell", "python"
+	GoModule    string       `json:"go_module"`    // go install path (primary install method)
+	BrewFormula string       `json:"brew_formula"` // homebrew formula (alternative)
+	Binary      string       `json:"binary"`       // expected binary name in PATH after install
+	HasSetup    bool         `json:"has_setup"`    // plugin binary supports "install" subcommand
+	EnvVars     []EnvVarSpec `json:"env_vars"`     // required/optional env vars for configuration
 }
 
 // EnvVarSpec describes an environment variable a plugin needs.
