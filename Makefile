@@ -15,9 +15,9 @@ all: build
 
 ## ---------- Formatting & Linting ------------------------------------------
 
-## fmt: format all Go source files in place.
+## fmt: format all Go source files in place (all modules).
 fmt:
-	@$(GO) fmt ./...
+	@gofmt -w .
 
 ## fmt-check: verify formatting without modifying files (CI-safe).
 fmt-check:
