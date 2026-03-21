@@ -116,6 +116,26 @@ enabled = false   # set to true to opt in
 
 ---
 
+## AI Mode context (Sigil Shell)
+
+When using AI mode in the Sigil Shell (Alt+Tab to toggle), the following
+workflow metadata is included as context with your query:
+
+- **Current working directory** — the absolute path of your shell CWD
+- **Active git branch** — the branch name in the current repo
+- **Recent file paths** — the 5 most recently edited files (paths only, not contents)
+- **Recent terminal commands** — the 5 most recently executed commands
+- **Conversation history** — prior turns in the current AI session (cleared on restart)
+
+When inference is routed to cloud (modes: `remote` or `remotefirst`), this
+metadata is sent to the configured cloud provider along with your query text.
+**No file contents are ever sent.** The route badge on each AI response shows
+whether the query was handled locally (cyan) or via cloud (amber).
+
+To keep all AI queries on-device, set `mode = "local"` in your config.
+
+---
+
 ## Cloud inference — detailed data flow
 
 ```

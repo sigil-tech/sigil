@@ -131,8 +131,8 @@ func parseFlags() daemonConfig {
 		inferenceMode = flag.String("inference-mode", fileCfg.Inference.Mode, "Inference routing mode: local|localfirst|remotefirst|remote")
 		watchPaths    = flag.String("watch", watchDefault, "Comma-separated directories to watch for file events")
 		repoPaths     = flag.String("repos", repoDefault, "Comma-separated git repository roots to watch")
-		analyzeEvery  = flag.Duration("analyze-every", time.Hour, "How often to run an analysis cycle")
-		notifierLevel = flag.Int("level", fileCfg.Notifier.Level, "Notification level 0=silent 1=digest 2=ambient 3=conversational 4=autonomous")
+		analyzeEvery  = flag.Duration("analyze-every", parseAnalyzeEvery(fileCfg), "How often to run an analysis cycle")
+		notifierLevel = flag.Int("level", fileCfg.Notifier.LevelOrDefault(), "Notification level 0=silent 1=digest 2=ambient 3=conversational 4=autonomous")
 		logLevel      = flag.String("log-level", fileCfg.Daemon.LogLevel, "Log level: debug|info|warn|error")
 		digestTime    = flag.String("digest-time", fileCfg.Notifier.DigestTime, "Daily digest time HH:MM (level 1 only)")
 	)
@@ -153,9 +153,23 @@ func parseFlags() daemonConfig {
 	}
 }
 
+// parseAnalyzeEvery returns the analyze interval from config, defaulting to 1h.
+func parseAnalyzeEvery(cfg *config.Config) time.Duration {
+	if cfg.Schedule.AnalyzeEvery == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(cfg.Schedule.AnalyzeEvery)
+	if err != nil {
+		return time.Hour
+	}
+	return d
+}
+
 // --- Runtime ----------------------------------------------------------------
 
 func run(cfg daemonConfig, log *slog.Logger) error {
+	startTime := time.Now()
+
 	ctx, stop := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -305,7 +319,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg)
+	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg, startTime)
 	registerTaskHandlers(srv, taskTracker, db)
 	registerMLHandlers(srv, mlEngine, cfg.dbPath)
 
@@ -664,6 +678,19 @@ func drainWithTimeoutAndExit(log *slog.Logger, timeout time.Duration, drainFn fu
 
 // --- Socket handlers --------------------------------------------------------
 
+// countEventsToday returns the number of events recorded since midnight UTC today.
+// Errors are logged and a zero count is returned so the status handler stays healthy.
+func countEventsToday(ctx context.Context, db *store.Store, log *slog.Logger) int64 {
+	now := time.Now().UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	n, err := db.CountEvents(ctx, "", midnight)
+	if err != nil {
+		log.Warn("countEventsToday: query failed", "err", err)
+		return 0
+	}
+	return n
+}
+
 // registerHandlers wires all socket methods to their implementations.
 // Each handler runs in a per-connection goroutine; all store calls must be
 // context-aware so they respect connection-level cancellation.
@@ -679,6 +706,7 @@ func registerHandlers(
 	nextDigest *atomic.Int64,
 	currentProfile *atomic.Value,
 	cfg daemonConfig,
+	startTime time.Time,
 ) {
 	// status — quick health check for sigilctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
@@ -688,6 +716,8 @@ func registerHandlers(
 			"notifier_level":             int(ntf.Level()),
 			"rss_mb":                     rssMB.Load(),
 			"current_keybinding_profile": currentProfile.Load(),
+			"uptime_seconds":             int64(time.Since(startTime).Seconds()),
+			"events_today":               countEventsToday(ctx, db, log),
 		}
 		if ntf.Level() == notifier.LevelDigest {
 			if ns := nextDigest.Load(); ns > 0 {

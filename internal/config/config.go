@@ -22,6 +22,7 @@ type Config struct {
 	ML        MLConfig                `toml:"ml"`
 	Plugins   map[string]PluginConfig `toml:"plugins"`
 	Retention RetentionConfig         `toml:"retention"`
+	Schedule  ScheduleConfig          `toml:"schedule"`
 	Fleet     FleetConfig             `toml:"fleet"`
 	Network   NetworkConfig           `toml:"network"`
 }
@@ -88,8 +89,21 @@ func (d DaemonConfig) IsActuationsEnabled() bool {
 
 // NotifierConfig controls how suggestions are surfaced.
 type NotifierConfig struct {
-	Level      int    `toml:"level"`
+	Level      *int   `toml:"level"`
 	DigestTime string `toml:"digest_time"` // "HH:MM" in local time
+}
+
+// LevelOrDefault returns the notification level, defaulting to 2 (Ambient).
+func (n NotifierConfig) LevelOrDefault() int {
+	if n.Level == nil {
+		return 2
+	}
+	return *n.Level
+}
+
+// ScheduleConfig controls analysis timing.
+type ScheduleConfig struct {
+	AnalyzeEvery string `toml:"analyze_every"` // duration string, e.g. "5m", "1h"
 }
 
 // InferenceConfig configures the inference engine backends.
@@ -140,7 +154,6 @@ func Defaults() *Config {
 			LogLevel: "info",
 		},
 		Notifier: NotifierConfig{
-			Level:      2, // LevelAmbient
 			DigestTime: "09:00",
 		},
 		Inference: InferenceConfig{
@@ -221,13 +234,17 @@ func merge(dst, src *Config) {
 		dst.Daemon.MaxWatches = src.Daemon.MaxWatches
 	}
 
-	// Notifier: level 0 (Silent) is a valid non-default, so we use a sentinel.
-	// We trust whatever the file sets.
-	if src.Notifier.Level != 0 {
+	// Notifier: *int pointer distinguishes absent from explicitly 0 (Silent).
+	if src.Notifier.Level != nil {
 		dst.Notifier.Level = src.Notifier.Level
 	}
 	if src.Notifier.DigestTime != "" {
 		dst.Notifier.DigestTime = src.Notifier.DigestTime
+	}
+
+	// Schedule
+	if src.Schedule.AnalyzeEvery != "" {
+		dst.Schedule.AnalyzeEvery = src.Schedule.AnalyzeEvery
 	}
 
 	if src.Inference.Mode != "" {

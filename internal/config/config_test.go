@@ -16,7 +16,7 @@ func TestDefaults(t *testing.T) {
 		want any
 	}{
 		{"LogLevel", Defaults().Daemon.LogLevel, "info"},
-		{"NotifierLevel", Defaults().Notifier.Level, 2},
+		{"NotifierLevel", Defaults().Notifier.LevelOrDefault(), 2},
 		{"DigestTime", Defaults().Notifier.DigestTime, "09:00"},
 		{"InferenceMode", Defaults().Inference.Mode, "localfirst"},
 		{"RawEventDays", Defaults().Retention.RawEventDays, 90},
@@ -70,8 +70,8 @@ func TestLoad(t *testing.T) {
 				if cfg.Daemon.LogLevel != "info" {
 					t.Errorf("LogLevel = %q, want %q", cfg.Daemon.LogLevel, "info")
 				}
-				if cfg.Notifier.Level != 2 {
-					t.Errorf("Notifier.Level = %d, want 2", cfg.Notifier.Level)
+				if cfg.Notifier.LevelOrDefault() != 2 {
+					t.Errorf("Notifier.LevelOrDefault() = %d, want 2", cfg.Notifier.LevelOrDefault())
 				}
 				if cfg.Inference.Mode != "localfirst" {
 					t.Errorf("Inference.Mode = %q, want localfirst", cfg.Inference.Mode)
@@ -98,8 +98,8 @@ mode = "remote"
 					t.Errorf("Inference.Mode = %q, want remote", cfg.Inference.Mode)
 				}
 				// Unset fields keep defaults.
-				if cfg.Notifier.Level != 2 {
-					t.Errorf("Notifier.Level = %d, want 2 (default)", cfg.Notifier.Level)
+				if cfg.Notifier.LevelOrDefault() != 2 {
+					t.Errorf("Notifier.LevelOrDefault() = %d, want 2 (default)", cfg.Notifier.LevelOrDefault())
 				}
 				if cfg.Retention.RawEventDays != 90 {
 					t.Errorf("RawEventDays = %d, want 90 (default)", cfg.Retention.RawEventDays)
@@ -142,8 +142,8 @@ raw_event_days = 30
 				if len(cfg.Daemon.WatchDirs) != 1 || cfg.Daemon.WatchDirs[0] != "/home/user/code" {
 					t.Errorf("WatchDirs = %v", cfg.Daemon.WatchDirs)
 				}
-				if cfg.Notifier.Level != 3 {
-					t.Errorf("Notifier.Level = %d, want 3", cfg.Notifier.Level)
+				if cfg.Notifier.LevelOrDefault() != 3 {
+					t.Errorf("Notifier.LevelOrDefault() = %d, want 3", cfg.Notifier.LevelOrDefault())
 				}
 				if cfg.Notifier.DigestTime != "08:00" {
 					t.Errorf("DigestTime = %q, want 08:00", cfg.Notifier.DigestTime)
@@ -165,6 +165,30 @@ raw_event_days = 30
 				}
 				if cfg.Retention.RawEventDays != 30 {
 					t.Errorf("RawEventDays = %d, want 30", cfg.Retention.RawEventDays)
+				}
+			},
+		},
+		{
+			name: "notifier level 0 (silent) is respected",
+			toml: `
+[notifier]
+level = 0
+`,
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.Notifier.LevelOrDefault() != 0 {
+					t.Errorf("Notifier.LevelOrDefault() = %d, want 0 (silent)", cfg.Notifier.LevelOrDefault())
+				}
+			},
+		},
+		{
+			name: "schedule analyze_every merges",
+			toml: `
+[schedule]
+analyze_every = "5m"
+`,
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.Schedule.AnalyzeEvery != "5m" {
+					t.Errorf("Schedule.AnalyzeEvery = %q; want 5m", cfg.Schedule.AnalyzeEvery)
 				}
 			},
 		},
