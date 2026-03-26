@@ -10,9 +10,9 @@ import (
 func TestDetectShells(t *testing.T) {
 	tests := []struct {
 		name      string
-		shell     string            // value for $SHELL
-		binaries  map[string]bool   // fake binaries to create (relative to tmpdir)
-		wantNames []string          // expected shell names in order
+		shell     string          // value for $SHELL
+		binaries  map[string]bool // fake binaries to create (relative to tmpdir)
+		wantNames []string        // expected shell names in order
 	}{
 		{
 			name:      "zsh_only_via_env",
@@ -108,7 +108,7 @@ func TestInstallShellHookFor(t *testing.T) {
 		existingRC string // existing RC file content ("" means no file)
 		wantInRC   string // substring expected in RC file after install
 		wantErr    bool
-		idempotent bool   // if true, run twice and ensure no duplication
+		idempotent bool // if true, run twice and ensure no duplication
 	}{
 		{
 			name:       "fresh_install",
