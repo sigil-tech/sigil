@@ -18,14 +18,14 @@ const businessMinObservation = 24 * time.Hour
 
 // emailApps lists window classes commonly associated with email clients.
 var emailApps = map[string]bool{
-	"thunderbird":    true,
-	"evolution":      true,
-	"geary":          true,
-	"outlook":        true,
-	"mail":           true,
-	"gmail":          true,
+	"thunderbird":       true,
+	"evolution":         true,
+	"geary":             true,
+	"outlook":           true,
+	"mail":              true,
+	"gmail":             true,
 	"microsoft-outlook": true,
-	"outlook.exe":    true,
+	"outlook.exe":       true,
 }
 
 // spreadsheetApps lists window classes for spreadsheet applications.
@@ -41,29 +41,29 @@ var spreadsheetApps = map[string]bool{
 
 // calendarApps lists window classes for calendar applications.
 var calendarApps = map[string]bool{
-	"gnome-calendar":     true,
-	"thunderbird":        true,
-	"evolution":          true,
-	"outlook":            true,
-	"google-calendar":    true,
-	"microsoft-outlook":  true,
-	"fantastical":        true,
+	"gnome-calendar":    true,
+	"thunderbird":       true,
+	"evolution":         true,
+	"outlook":           true,
+	"google-calendar":   true,
+	"microsoft-outlook": true,
+	"fantastical":       true,
 }
 
 // documentApps lists window classes for document editors.
 var documentApps = map[string]bool{
-	"libreoffice-writer": true,
-	"libreoffice-calc":   true,
-	"libreoffice-impress": true,
-	"microsoft-word":     true,
-	"microsoft-excel":    true,
+	"libreoffice-writer":   true,
+	"libreoffice-calc":     true,
+	"libreoffice-impress":  true,
+	"microsoft-word":       true,
+	"microsoft-excel":      true,
 	"microsoft-powerpoint": true,
-	"word.exe":           true,
-	"excel.exe":          true,
-	"powerpoint.exe":     true,
-	"google-docs":        true,
-	"notion":             true,
-	"obsidian":           true,
+	"word.exe":             true,
+	"excel.exe":            true,
+	"powerpoint.exe":       true,
+	"google-docs":          true,
+	"notion":               true,
+	"obsidian":             true,
 }
 
 // crossAppSwitchThreshold is the number of switches among the same 3+ app set
