@@ -15,7 +15,9 @@ Sigil observes your workflow at the metadata level — never the content:
 | **Terminal commands** | The command string and exit code — not stdin/stdout output |
 | **Git activity** | Commit counts, branch names, and repository paths — not diffs or commit messages |
 | **Process names** | Names of running processes (e.g., `nvim`, `go`, `docker`) — not arguments or environment variables |
-| **Window focus** | Active window title and app name on Hyprland — not window contents or input |
+| **Window focus** | Active window title and app name on Hyprland/Windows — not window contents or input |
+| **Clipboard** | Content type (text/image/file) and byte size on Windows — never the clipboard content itself |
+| **App state** | Active document name parsed from window titles on Windows (e.g., "Q4_Board.xlsx") — never document content, cell values, or text |
 | **AI interactions** | Query category, routing (local/cloud), and latency — not query text unless you enable logging |
 
 All records include a timestamp and are stored in a local SQLite database.
@@ -27,7 +29,7 @@ All records include a timestamp and are stored in a local SQLite database.
 - **File contents** — Sigil never reads or stores the text inside your files
 - **Keystrokes** — No keystroke logger is present
 - **Screen capture** — No screenshots or screen recordings
-- **Clipboard** — The clipboard is never accessed
+- **Clipboard content** — On Windows, the clipboard content type and size are observed, but the actual clipboard text, images, or data are never read or stored
 - **Command arguments** — For privacy, only the base command name is recorded by the process monitor (terminal commands capture the full string you typed, but only what your shell sends)
 - **Environment variables** — `.env` files and shell environment are never read
 
