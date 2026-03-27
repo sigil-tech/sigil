@@ -93,6 +93,8 @@ func runInit() error {
 		if err := installLaunchdService(home); err != nil {
 			fmt.Fprintf(os.Stderr, "  [warn] launchd: %v\n", err)
 		}
+	case "windows":
+		installWindowsTask(home)
 	}
 
 	fmt.Println()
@@ -136,6 +138,11 @@ func runInitNonInteractive(home string) error {
 
 // installShellHook appends the appropriate source line to ~/.zshrc or ~/.bashrc.
 func installShellHook(home string) error {
+	// On Windows, install the PowerShell hook.
+	if runtime.GOOS == "windows" {
+		return installPowerShellHook(home)
+	}
+
 	shell := os.Getenv("SHELL")
 
 	var rcFile, hookFile, sourceLine string
@@ -195,6 +202,54 @@ func copyEmbeddedHook(name, dst string) error {
 		return fmt.Errorf("embedded asset scripts/%s: %w", name, err)
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+// installPowerShellHook installs the PowerShell shell hook on Windows.
+// It copies shell-hook.ps1 to %LOCALAPPDATA%\sigil\ and appends a dot-source
+// line to the PowerShell profile.
+func installPowerShellHook(home string) error {
+	appdata := os.Getenv("LOCALAPPDATA")
+	if appdata == "" {
+		appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+	}
+
+	hookDst := filepath.Join(appdata, "sigil", "shell-hook.ps1")
+	if err := copyEmbeddedHook("shell-hook.ps1", hookDst); err != nil {
+		return fmt.Errorf("copy hook: %w", err)
+	}
+
+	// Determine the PowerShell profile path.
+	// $PROFILE typically resolves to:
+	//   ~\Documents\PowerShell\Microsoft.PowerShell_profile.ps1
+	profileDir := filepath.Join(home, "Documents", "PowerShell")
+	rcFile := filepath.Join(profileDir, "Microsoft.PowerShell_profile.ps1")
+	sourceLine := fmt.Sprintf(`. "%s"`, hookDst)
+
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", profileDir, err)
+	}
+
+	rc, err := os.ReadFile(rcFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", rcFile, err)
+	}
+	if strings.Contains(string(rc), sourceLine) {
+		fmt.Printf("  [ok]   PowerShell hook already in %s\n", rcFile)
+		return nil
+	}
+
+	f, err := os.OpenFile(rcFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", rcFile, err)
+	}
+	defer f.Close()
+
+	_, err = fmt.Fprintf(f, "\n# Sigil OS shell hook\n%s\n", sourceLine)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  [ok]   PowerShell hook appended to %s\n", rcFile)
+	return nil
 }
 
 // promptYN asks a yes/no question and returns true for yes.
@@ -593,11 +648,20 @@ func installConfigFile(watchDirs, repoDirs []string, inferenceTOML, mlTOML, plug
 
 // installDataDir creates the sigild data directory.
 func installDataDir(home string) error {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		base = filepath.Join(home, ".local", "share")
+	var dir string
+	if runtime.GOOS == "windows" {
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		dir = filepath.Join(appdata, "sigil", "sigild")
+	} else {
+		base := os.Getenv("XDG_DATA_HOME")
+		if base == "" {
+			base = filepath.Join(home, ".local", "share")
+		}
+		dir = filepath.Join(base, "sigild")
 	}
-	dir := filepath.Join(base, "sigild")
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
@@ -695,4 +759,24 @@ func installLaunchdService(home string) error {
 		fmt.Printf("  [ok]   launchctl load %s\n", filepath.Base(dst))
 	}
 	return nil
+}
+
+// installWindowsTask creates a Windows Task Scheduler entry that starts
+// sigild at login.
+func installWindowsTask(_ string) {
+	binPath, _ := os.Executable()
+	// Create a scheduled task that runs at login.
+	cmd := exec.Command("schtasks", "/Create",
+		"/TN", "Sigil Daemon",
+		"/TR", fmt.Sprintf(`"%s" run`, binPath),
+		"/SC", "ONLOGON",
+		"/RL", "LIMITED",
+		"/F", // Force overwrite if exists
+	)
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("  [warn] failed to create scheduled task: %v\n", err)
+		fmt.Printf("  You can start sigild manually with: sigild run\n")
+	} else {
+		fmt.Println("  [ok]   scheduled task created (starts on login)")
+	}
 }

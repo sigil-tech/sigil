@@ -1600,6 +1600,13 @@ func newLogger(level string) *slog.Logger {
 }
 
 func defaultDBPath() string {
+	if goruntime.GOOS == "windows" {
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(appdata, "sigil", "sigild", "data.db")
+	}
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
 		base = filepath.Join(homeDir(), ".local", "share")
@@ -1608,6 +1615,13 @@ func defaultDBPath() string {
 }
 
 func defaultSocketPath() string {
+	if goruntime.GOOS == "windows" {
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(appdata, "sigil", "sigild.sock")
+	}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		return filepath.Join(dir, "sigild.sock")
 	}
@@ -1617,7 +1631,7 @@ func defaultSocketPath() string {
 	if goruntime.GOOS == "darwin" {
 		return filepath.Join(os.TempDir(), "sigild.sock")
 	}
-	return fmt.Sprintf("/run/user/%d/sigild.sock", os.Getuid())
+	return fmt.Sprintf("/run/user/%d/sigild.sock", currentUID())
 }
 
 func homeDir() string {
@@ -1639,6 +1653,13 @@ func splitPaths(s string) []string {
 // --- Network data directory -------------------------------------------------
 
 func networkDataDir() string {
+	if goruntime.GOOS == "windows" {
+		appdata := os.Getenv("LOCALAPPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+		}
+		return filepath.Join(appdata, "sigil")
+	}
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
 		base = filepath.Join(homeDir(), ".local", "share")
