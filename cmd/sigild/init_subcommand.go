@@ -151,7 +151,7 @@ func installShellHook(home string) error {
 	case strings.Contains(shell, "fish"):
 		rcFile = filepath.Join(home, ".config", "fish", "config.fish")
 		hookFile = "shell-hook.fish"
-		sourceLine = `source "$HOME/.config/sigil/shell-hook.fish"`
+		sourceLine = `source $HOME/.config/sigil/shell-hook.fish`
 	default:
 		fmt.Println("  [skip] shell hook: unrecognised SHELL, install manually")
 		return nil
@@ -173,7 +173,7 @@ func installShellHook(home string) error {
 		return nil
 	}
 
-	// Ensure parent directory exists (e.g. ~/.config/fish/ for fish shell).
+	// Ensure parent dir exists (no-op for bash/zsh, needed for fish's ~/.config/fish/).
 	if err := os.MkdirAll(filepath.Dir(rcFile), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(rcFile), err)
 	}
