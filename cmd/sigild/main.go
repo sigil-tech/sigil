@@ -11,7 +11,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -21,6 +20,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -40,10 +40,16 @@ import (
 	"github.com/wambozi/sigil/internal/event"
 	"github.com/wambozi/sigil/internal/fleet"
 	"github.com/wambozi/sigil/internal/inference"
+	"github.com/wambozi/sigil/internal/mcp"
+	"github.com/wambozi/sigil/internal/ml"
+	"net/http"
+
 	"github.com/wambozi/sigil/internal/network"
 	"github.com/wambozi/sigil/internal/notifier"
+	"github.com/wambozi/sigil/internal/plugin"
 	"github.com/wambozi/sigil/internal/socket"
 	"github.com/wambozi/sigil/internal/store"
+	"github.com/wambozi/sigil/internal/task"
 )
 
 func main() {
@@ -57,6 +63,7 @@ func main() {
 	}
 
 	cfg := parseFlags()
+	applyTierDefaults(cfg.fileCfg)
 
 	log := newLogger(cfg.logLevel)
 	log.Info("sigild starting", "version", "0.1.0-dev")
@@ -75,6 +82,7 @@ type daemonConfig struct {
 	inferenceMode string
 	watchPaths    []string
 	repoPaths     []string
+	maxWatches    int
 	analyzeEvery  time.Duration
 	notifierLevel int
 	logLevel      string
@@ -124,8 +132,8 @@ func parseFlags() daemonConfig {
 		inferenceMode = flag.String("inference-mode", fileCfg.Inference.Mode, "Inference routing mode: local|localfirst|remotefirst|remote")
 		watchPaths    = flag.String("watch", watchDefault, "Comma-separated directories to watch for file events")
 		repoPaths     = flag.String("repos", repoDefault, "Comma-separated git repository roots to watch")
-		analyzeEvery  = flag.Duration("analyze-every", time.Hour, "How often to run an analysis cycle")
-		notifierLevel = flag.Int("level", fileCfg.Notifier.Level, "Notification level 0=silent 1=digest 2=ambient 3=conversational 4=autonomous")
+		analyzeEvery  = flag.Duration("analyze-every", parseAnalyzeEvery(fileCfg), "How often to run an analysis cycle")
+		notifierLevel = flag.Int("level", fileCfg.Notifier.LevelOrDefault(), "Notification level 0=silent 1=digest 2=ambient 3=conversational 4=autonomous")
 		logLevel      = flag.String("log-level", fileCfg.Daemon.LogLevel, "Log level: debug|info|warn|error")
 		digestTime    = flag.String("digest-time", fileCfg.Notifier.DigestTime, "Daily digest time HH:MM (level 1 only)")
 	)
@@ -137,6 +145,7 @@ func parseFlags() daemonConfig {
 		inferenceMode: *inferenceMode,
 		watchPaths:    splitPaths(*watchPaths),
 		repoPaths:     splitPaths(*repoPaths),
+		maxWatches:    fileCfg.Daemon.MaxWatches,
 		analyzeEvery:  *analyzeEvery,
 		notifierLevel: *notifierLevel,
 		logLevel:      *logLevel,
@@ -145,9 +154,46 @@ func parseFlags() daemonConfig {
 	}
 }
 
+// parseAnalyzeEvery returns the analyze interval from config, defaulting to 1h.
+func parseAnalyzeEvery(cfg *config.Config) time.Duration {
+	if cfg.Schedule.AnalyzeEvery == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(cfg.Schedule.AnalyzeEvery)
+	if err != nil {
+		return time.Hour
+	}
+	return d
+}
+
+// applyTierDefaults sets sensible defaults based on the cloud tier.
+// Tiers set defaults, not hard limits — explicit user settings are preserved.
+func applyTierDefaults(cfg *config.Config) {
+	switch cfg.Cloud.Tier {
+	case "", "free":
+		// Free tier: all defaults are local (already the case).
+	case "pro":
+		if cfg.Inference.Mode == "" {
+			cfg.Inference.Mode = "remotefirst"
+		}
+	case "team":
+		if cfg.Inference.Mode == "" {
+			cfg.Inference.Mode = "remotefirst"
+		}
+		if cfg.CloudSync.Enabled == nil {
+			t := true
+			cfg.CloudSync.Enabled = &t
+		}
+	default:
+		slog.Warn("unrecognized cloud tier, using free-tier defaults", "tier", cfg.Cloud.Tier)
+	}
+}
+
 // --- Runtime ----------------------------------------------------------------
 
 func run(cfg daemonConfig, log *slog.Logger) error {
+	startTime := time.Now()
+
 	ctx, stop := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -171,6 +217,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 			ServerURL: cfg.fileCfg.Inference.Local.ServerURL,
 			ServerBin: cfg.fileCfg.Inference.Local.ServerBin,
 			ModelPath: cfg.fileCfg.Inference.Local.ModelPath,
+			ModelName: cfg.fileCfg.Inference.Local.ModelName,
 			CtxSize:   cfg.fileCfg.Inference.Local.CtxSize,
 			GPULayers: cfg.fileCfg.Inference.Local.GPULayers,
 		},
@@ -201,16 +248,61 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	terminalSrc := sources.NewTerminalSource()
 
 	col := collector.New(db, log)
-	col.Add(&sources.FileSource{Paths: cfg.watchPaths})
+	col.Add(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
 	col.Add(&sources.ProcessSource{})
 	col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
 	col.Add(terminalSrc)
 	col.Add(&sources.HyprlandSource{})
+	addPlatformSources(col)
 
 	if err := col.Start(ctx); err != nil {
 		return fmt.Errorf("start collector: %w", err)
 	}
-	log.Info("collector started", "sources", 5)
+	log.Info("collector started")
+
+	// --- Task Tracker -------------------------------------------------------
+	taskTracker := task.NewTracker(db, log)
+	if err := taskTracker.Restore(ctx); err != nil {
+		log.Warn("task tracker: restore failed", "err", err)
+	}
+	go taskTracker.RunEventLoop(ctx, col.Subscribe())
+	log.Info("task tracker started")
+
+	// --- ML Engine ----------------------------------------------------------
+	mlCfg := ml.Config{
+		Mode:         ml.RoutingMode(cfg.fileCfg.ML.Mode),
+		RetrainEvery: cfg.fileCfg.ML.RetrainEvery,
+		Local: ml.LocalConfig{
+			Enabled:   cfg.fileCfg.ML.Local.Enabled,
+			ServerURL: cfg.fileCfg.ML.Local.ServerURL,
+			ServerBin: cfg.fileCfg.ML.Local.ServerBin,
+		},
+		Cloud: ml.CloudConfig{
+			Enabled: cfg.fileCfg.ML.Cloud.Enabled,
+			BaseURL: cfg.fileCfg.ML.Cloud.BaseURL,
+			APIKey:  cfg.fileCfg.ML.Cloud.APIKey,
+		},
+	}
+	mlEngine, err := ml.New(mlCfg, log)
+	if err != nil {
+		log.Warn("ml engine: creation failed", "err", err)
+		mlEngine = &ml.Engine{} // nil-safe disabled engine
+	} else if mlEngine.Enabled() {
+		pingCtx, cancelML := context.WithTimeout(ctx, 5*time.Second)
+		if err := mlEngine.Ping(pingCtx); err != nil {
+			log.Warn("ml engine unreachable at startup — will retry", "err", err)
+		} else {
+			log.Info("ml engine reachable")
+		}
+		cancelML()
+	}
+	defer mlEngine.Close()
+
+	// Wire ML into the task tracker for predictions and retraining.
+	if mlEngine.Enabled() {
+		mlEngine.SetStore(db)
+		taskTracker.SetMLEngine(&mlEngineAdapter{mlEngine}, cfg.dbPath, cfg.fileCfg.ML.RetrainEvery)
+	}
 
 	// --- Notifier -----------------------------------------------------------
 	ntf := notifier.New(db, notifier.Level(cfg.notifierLevel), log)
@@ -251,7 +343,36 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
-	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg)
+	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg, startTime, stop)
+	registerTaskHandlers(srv, taskTracker, db)
+	registerMLHandlers(srv, mlEngine, cfg.dbPath)
+
+	// --- MCP Tool Registry + Ask Handler ------------------------------------
+	mcpRegistry := mcp.NewRegistry()
+	mcp.RegisterStoreTools(mcpRegistry, db)
+
+	srv.Handle("ask", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Query == "" {
+			return socket.Response{Error: "query is required"}
+		}
+
+		result, err := mcpRegistry.RunToolLoop(ctx, &mcpEngineAdapter{engine}, p.Query)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"answer":          result.Answer,
+			"tool_calls_made": result.ToolCallsMade,
+			"latency_ms":      result.TotalLatencyMS,
+		})}
+	})
 
 	// Wire suggestion push via the notifier's OnSuggestion callback.
 	// Every suggestion that passes the confidence gate is fanned out to any
@@ -296,6 +417,13 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		srv.Notify("actuations", payload)
 	})
 
+	// Auto-test actuator: runs project tests after file saves at level 4.
+	autoTest := actuator.NewAutoTestActuator(log,
+		func() int { return int(ntf.Level()) },
+		func(a actuator.Action) { reg.Notify(a) },
+	)
+	go autoTest.RunEventLoop(col.Subscribe())
+
 	log.Info("actuator registry started")
 
 	// --- Fleet Reporter -----------------------------------------------------
@@ -311,6 +439,175 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		return fmt.Errorf("start socket: %w", err)
 	}
 	log.Info("socket listening", "path", cfg.socketPath)
+
+	// --- Plugin ingest HTTP server ------------------------------------------
+	pluginIngest := plugin.NewIngestServer(func(pe plugin.Event) {
+		corr, _ := json.Marshal(pe.Correlation)
+		payload, _ := json.Marshal(pe.Payload)
+		if err := db.InsertPluginEvent(ctx, pe.Plugin, pe.Kind, string(corr), string(payload)); err != nil {
+			log.Error("plugin ingest: store event", "plugin", pe.Plugin, "err", err)
+		}
+	}, log)
+	pluginHTTP := &http.Server{
+		Addr:    "127.0.0.1:7775",
+		Handler: pluginIngest.Handler(),
+	}
+	go func() {
+		if err := pluginHTTP.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("plugin ingest server", "err", err)
+		}
+	}()
+	log.Info("plugin ingest listening", "addr", "127.0.0.1:7775")
+
+	// --- Plugin Manager -----------------------------------------------------
+	pluginMgr := plugin.NewManager("http://127.0.0.1:7775/api/v1/ingest", log)
+	for name, pcfg := range cfg.fileCfg.Plugins {
+		pluginMgr.Register(plugin.Config{
+			Name:         name,
+			Enabled:      pcfg.Enabled,
+			Binary:       pcfg.Binary,
+			Daemon:       pcfg.Daemon,
+			PollInterval: pcfg.PollInterval,
+			HealthURL:    pcfg.HealthURL,
+			Env:          pcfg.Env,
+		})
+	}
+	if err := pluginMgr.Start(ctx); err != nil {
+		log.Warn("plugin manager: start failed", "err", err)
+	}
+	defer pluginMgr.Stop()
+
+	// Wire capabilities provider into the HTTP ingest server so sigil-ml
+	// can query GET /api/v1/capabilities to discover installed plugins.
+	pluginIngest.SetCapabilitiesProvider(func() []plugin.Capabilities {
+		var caps []plugin.Capabilities
+		for _, s := range pluginMgr.Plugins() {
+			if !s.Enabled {
+				continue
+			}
+			c, err := plugin.DiscoverCapabilities(s.Name)
+			if err != nil {
+				continue
+			}
+			caps = append(caps, *c)
+		}
+		return caps
+	})
+
+	// Plugin status socket handler (registered after manager is created).
+	srv.Handle("plugin-status", func(ctx context.Context, _ socket.Request) socket.Response {
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(pluginMgr.Plugins())}
+	})
+
+	srv.Handle("plugin-capabilities", func(ctx context.Context, _ socket.Request) socket.Response {
+		type pluginCaps struct {
+			Name        string                `json:"name"`
+			Enabled     bool                  `json:"enabled"`
+			Running     bool                  `json:"running"`
+			Healthy     bool                  `json:"healthy"`
+			Actions     []plugin.PluginAction `json:"actions,omitempty"`
+			DataSources []string              `json:"data_sources,omitempty"`
+		}
+		var result []pluginCaps
+		for _, s := range pluginMgr.Plugins() {
+			pc := pluginCaps{Name: s.Name, Enabled: s.Enabled, Running: s.Running, Healthy: s.Healthy}
+			if s.Enabled {
+				caps, err := plugin.DiscoverCapabilities(s.Name)
+				if err == nil && caps != nil {
+					pc.Actions = caps.Actions
+					pc.DataSources = caps.DataSources
+				}
+			}
+			result = append(result, pc)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// Register plugin-aware MCP tools now that the manager exists.
+	mcp.RegisterPluginTools(mcpRegistry, pluginMgr, log)
+
+	// --- Task transition → LLM suggestion → plugin action ------------------
+	taskTracker.OnTransition = func(oldPhase, newPhase task.Phase, t *task.Task) {
+		// Only act on significant transitions.
+		if newPhase != task.PhaseIdle && newPhase != task.PhaseStuck {
+			return
+		}
+
+		level := ntf.Level()
+
+		// Level 0-1: silent, no LLM call.
+		if level < notifier.LevelAmbient {
+			return
+		}
+
+		// Check workflow state — respect flow state before interrupting.
+		ctx := context.Background()
+		wsPred, _ := db.QueryLatestPrediction(ctx, "suggest")
+		if wsPred != nil {
+			dominantState, _ := wsPred.Result["dominant_state"].(string)
+			focusScore, _ := wsPred.Result["focus_score"].(float64)
+
+			// Don't interrupt deep work with high focus.
+			if dominantState == "deep_work" && focusScore > 0.8 {
+				log.Info("transition suggestion: skipping — engineer in deep work",
+					"focus_score", focusScore)
+				return
+			}
+		}
+
+		// Build a query based on the transition.
+		var query string
+		confidence := notifier.ConfidenceModerate
+		switch {
+		case oldPhase != task.PhaseIdle && newPhase == task.PhaseIdle:
+			query = fmt.Sprintf(
+				"The engineer just completed a task on branch '%s' in %s. "+
+					"What should they work on next? Check their sprint backlog, open PRs, and recent task history. "+
+					"Be concise — one paragraph max.",
+				t.Branch, filepath.Base(t.RepoRoot))
+		case newPhase == task.PhaseStuck:
+			query = fmt.Sprintf(
+				"The engineer is stuck on branch '%s' in %s — %d consecutive test failures. "+
+					"What should they try? Check the recent errors and suggest a different approach. "+
+					"Be concise.",
+				t.Branch, filepath.Base(t.RepoRoot), t.TestFailures)
+
+			// Elevate urgency when blocked with negative momentum.
+			if wsPred != nil {
+				momentum, _ := wsPred.Result["momentum"].(float64)
+				if momentum < -0.5 {
+					confidence = notifier.ConfidenceStrong
+				}
+			}
+		default:
+			return
+		}
+
+		// Ask the LLM with MCP tools.
+		result, err := mcpRegistry.RunToolLoop(ctx, &mcpEngineAdapter{engine}, query)
+		if err != nil {
+			log.Warn("transition suggestion: LLM failed", "err", err)
+			return
+		}
+
+		suggestion := notifier.Suggestion{
+			Category:   "task_transition",
+			Confidence: confidence,
+			Title:      "Sigil",
+			Body:       result.Answer,
+		}
+
+		// Level 3+: check if claude plugin can launch a session.
+		if level >= notifier.LevelConversational {
+			suggestion.ActionCmd = fmt.Sprintf(
+				`sigil-plugin-claude launch --prompt %q --cwd %q`,
+				result.Answer, t.RepoRoot)
+		}
+
+		ntf.Surface(suggestion)
+		log.Info("transition suggestion surfaced",
+			"phase", newPhase, "tools", result.ToolCallsMade, "level", level)
+	}
 
 	// --- Credential store (always initialised; handlers registered below) ---
 	credStore := network.NewCredentialStore()
@@ -405,6 +702,49 @@ func drainWithTimeoutAndExit(log *slog.Logger, timeout time.Duration, drainFn fu
 
 // --- Socket handlers --------------------------------------------------------
 
+// countEventsToday returns the number of events recorded since midnight UTC today.
+// Errors are logged and a zero count is returned so the status handler stays healthy.
+func countEventsToday(ctx context.Context, db *store.Store, log *slog.Logger) int64 {
+	now := time.Now().UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	n, err := db.CountEvents(ctx, "", midnight)
+	if err != nil {
+		log.Warn("countEventsToday: query failed", "err", err)
+		return 0
+	}
+	return n
+}
+
+// summarizeEvent produces a short human-readable summary from an event's payload.
+func summarizeEvent(e event.Event) string {
+	switch e.Kind {
+	case event.KindTerminal:
+		if cmd, ok := e.Payload["cmd"].(string); ok {
+			return cmd
+		}
+	case event.KindFile:
+		if path, ok := e.Payload["path"].(string); ok {
+			return path
+		}
+	case event.KindGit:
+		if msg, ok := e.Payload["message"].(string); ok {
+			return msg
+		}
+		if action, ok := e.Payload["action"].(string); ok {
+			return action
+		}
+	case event.KindProcess:
+		if name, ok := e.Payload["name"].(string); ok {
+			return name
+		}
+	case event.KindHyprland:
+		if title, ok := e.Payload["title"].(string); ok {
+			return title
+		}
+	}
+	return string(e.Kind) + " event"
+}
+
 // registerHandlers wires all socket methods to their implementations.
 // Each handler runs in a per-connection goroutine; all store calls must be
 // context-aware so they respect connection-level cancellation.
@@ -420,6 +760,8 @@ func registerHandlers(
 	nextDigest *atomic.Int64,
 	currentProfile *atomic.Value,
 	cfg daemonConfig,
+	startTime time.Time,
+	cancelFunc context.CancelFunc,
 ) {
 	// status — quick health check for sigilctl and the shell.
 	srv.Handle("status", func(ctx context.Context, _ socket.Request) socket.Response {
@@ -429,6 +771,11 @@ func registerHandlers(
 			"notifier_level":             int(ntf.Level()),
 			"rss_mb":                     rssMB.Load(),
 			"current_keybinding_profile": currentProfile.Load(),
+			"uptime_seconds":             int64(time.Since(startTime).Seconds()),
+			"events_today":               countEventsToday(ctx, db, log),
+			"analysis_interval":          cfg.analyzeEvery.String(),
+			"routing_mode":               cfg.inferenceMode,
+			"active_sources":             []string{"file", "process", "git", "terminal", "hyprland"},
 		}
 		if ntf.Level() == notifier.LevelDigest {
 			if ns := nextDigest.Load(); ns > 0 {
@@ -441,13 +788,161 @@ func registerHandlers(
 		}
 	})
 
+	// metrics — process-level resource metrics for the panel.
+	srv.Handle("metrics", func(_ context.Context, _ socket.Request) socket.Response {
+		pid := os.Getpid()
+		sigildRSS, _ := socket.ProcRSS(pid)
+		result := map[string]any{
+			"sigild_pid":       pid,
+			"sigild_rss_bytes": sigildRSS,
+		}
+
+		llamaPID, managed, ok := engine.LocalProcessInfo()
+		llamaInfo := map[string]any{
+			"active":  ok,
+			"managed": managed,
+		}
+		if ok {
+			llamaInfo["pid"] = llamaPID
+			if rss, err := socket.ProcRSS(llamaPID); err == nil {
+				llamaInfo["rss_bytes"] = rss
+			}
+			if cpu, err := socket.ProcCPUPercent(llamaPID); err == nil {
+				llamaInfo["cpu_pct"] = cpu
+			}
+			llamaInfo["model_name"] = engine.LocalModelName()
+			llamaInfo["context_tokens_max"] = engine.LocalCtxSize()
+			// context_tokens_used would require querying llama-server /slots;
+			// omitted for now — the panel can show max only.
+			llamaInfo["context_tokens_used"] = 0
+		}
+		result["llama_server"] = llamaInfo
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// events — return events from the store with optional pagination and filtering.
+	// When called with no payload, returns recent 50 (backward compatible).
+	// shutdown — graceful daemon shutdown triggered by sigilctl stop.
+	srv.Handle("shutdown", func(_ context.Context, _ socket.Request) socket.Response {
+		log.Info("shutdown requested via socket")
+		go cancelFunc() // cancel in a goroutine so the response is sent first
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]string{"status": "shutting_down"})}
+	})
+
 	// events — return recent events from the store.
 	srv.Handle("events", func(ctx context.Context, req socket.Request) socket.Response {
-		events, err := db.QueryEvents(ctx, "", 50)
+		if len(req.Payload) == 0 || string(req.Payload) == "null" {
+			// Backward compatible: return recent 50.
+			events, err := db.QueryEvents(ctx, "", 50)
+			if err != nil {
+				return socket.Response{Error: err.Error()}
+			}
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(events)}
+		}
+
+		var params struct {
+			Source string `json:"source"`
+			After  int64  `json:"after"`
+			Before int64  `json:"before"`
+			Limit  int    `json:"limit"`
+			Offset int    `json:"offset"`
+		}
+		if err := json.Unmarshal(req.Payload, &params); err != nil {
+			return socket.Response{Error: fmt.Sprintf("events: invalid payload: %s", err)}
+		}
+
+		filter := store.EventFilter{
+			Kind:   event.Kind(params.Source),
+			After:  params.After,
+			Before: params.Before,
+			Limit:  params.Limit,
+			Offset: params.Offset,
+		}
+
+		events, total, err := db.QueryEventsPaginated(ctx, filter)
 		if err != nil {
 			return socket.Response{Error: err.Error()}
 		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(events)}
+
+		type eventSummary struct {
+			ID         int64      `json:"id"`
+			Kind       event.Kind `json:"kind"`
+			Source     string     `json:"source"`
+			Summary    string     `json:"summary"`
+			Timestamp  int64      `json:"timestamp"`
+			HasDetails bool       `json:"has_details"`
+		}
+		summaries := make([]eventSummary, 0, len(events))
+		for _, e := range events {
+			summary := summarizeEvent(e)
+			summaries = append(summaries, eventSummary{
+				ID:         e.ID,
+				Kind:       e.Kind,
+				Source:     e.Source,
+				Summary:    summary,
+				Timestamp:  e.Timestamp.UnixMilli(),
+				HasDetails: len(e.Payload) > 0,
+			})
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"events": summaries,
+			"total":  total,
+			"limit":  filter.Limit,
+			"offset": filter.Offset,
+		})}
+	})
+
+	// event-detail — return a single event with full payload.
+	srv.Handle("event-detail", func(ctx context.Context, req socket.Request) socket.Response {
+		var params struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal(req.Payload, &params); err != nil {
+			return socket.Response{Error: fmt.Sprintf("event-detail: invalid payload: %s", err)}
+		}
+		e, err := db.QueryEventByID(ctx, params.ID)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("event-detail: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"id":        e.ID,
+			"kind":      e.Kind,
+			"source":    e.Source,
+			"payload":   e.Payload,
+			"timestamp": e.Timestamp.UnixMilli(),
+		})}
+	})
+
+	// purge-events — selectively delete events by IDs or filter.
+	srv.Handle("purge-events", func(ctx context.Context, req socket.Request) socket.Response {
+		var params struct {
+			IDs    []int64 `json:"ids"`
+			Source string  `json:"source"`
+			Before int64   `json:"before"`
+			After  int64   `json:"after"`
+		}
+		if err := json.Unmarshal(req.Payload, &params); err != nil {
+			return socket.Response{Error: fmt.Sprintf("purge-events: invalid payload: %s", err)}
+		}
+
+		var deleted int
+		var err error
+		if len(params.IDs) > 0 {
+			deleted, err = db.DeleteEvents(ctx, params.IDs)
+			log.Info("events purged by IDs", "count", deleted, "ids_requested", len(params.IDs))
+		} else {
+			filter := store.EventFilter{
+				Kind:   event.Kind(params.Source),
+				Before: params.Before,
+				After:  params.After,
+			}
+			deleted, err = db.DeleteEventsFiltered(ctx, filter)
+			log.Info("events purged by filter", "count", deleted, "source", params.Source, "before", params.Before, "after", params.After)
+		}
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("purge-events: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"deleted": deleted})}
 	})
 
 	// suggestions — return recent suggestions from the store.
@@ -649,7 +1144,64 @@ func registerHandlers(
 			return socket.Response{Error: fmt.Sprintf("insert feedback: %s", err)}
 		}
 
+		// Write ml_feedback event for sigil-ml learning loop.
+		accepted := p.Outcome == "accepted"
+		feedbackPayload := map[string]any{
+			"model":         "suggest",
+			"accepted":      accepted,
+			"suggestion_id": p.SuggestionID,
+		}
+		// Include current workflow state if available.
+		if wsPred, wsErr := db.QueryLatestPrediction(ctx, "suggest"); wsErr == nil && wsPred != nil {
+			if state, ok := wsPred.Result["dominant_state"].(string); ok {
+				feedbackPayload["state"] = state
+			}
+		}
+		_ = db.InsertEvent(ctx, event.Event{
+			Kind:      "ml_feedback",
+			Source:    "notifier",
+			Payload:   feedbackPayload,
+			Timestamp: time.Now(),
+		})
+
 		log.Info("feedback recorded", "suggestion_id", p.SuggestionID, "outcome", p.Outcome)
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
+	})
+
+	// correct — write an ml_correction event for a misclassified event.
+	// Payload: {"event_id": 12345, "correct_category": "researching"}
+	srv.Handle("correct", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			EventID         int64  `json:"event_id"`
+			CorrectCategory string `json:"correct_category"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.EventID <= 0 {
+			return socket.Response{Error: "event_id must be a positive integer"}
+		}
+		validCategories := map[string]bool{
+			"creating": true, "refining": true, "verifying": true, "navigating": true,
+			"researching": true, "integrating": true, "communicating": true, "idle": true,
+		}
+		if !validCategories[p.CorrectCategory] {
+			return socket.Response{Error: fmt.Sprintf("invalid category %q — valid: creating, refining, verifying, navigating, researching, integrating, communicating, idle", p.CorrectCategory)}
+		}
+
+		err := db.InsertEvent(ctx, event.Event{
+			Kind:   "ml_correction",
+			Source: "sigilctl",
+			Payload: map[string]any{
+				"event_id":         p.EventID,
+				"correct_category": p.CorrectCategory,
+			},
+			Timestamp: time.Now(),
+		})
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("insert correction: %s", err)}
+		}
+		log.Info("correction recorded", "event_id", p.EventID, "category", p.CorrectCategory)
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
 
@@ -823,6 +1375,311 @@ func registerHandlers(
 	})
 }
 
+// --- Task socket handlers ---------------------------------------------------
+
+func registerTaskHandlers(srv *socket.Server, tracker *task.Tracker, db *store.Store) {
+	// task — return the current inferred task.
+	srv.Handle("task", func(ctx context.Context, _ socket.Request) socket.Response {
+		cur := tracker.Current()
+		if cur == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"phase": "idle",
+			})}
+		}
+
+		// Build top files list (sorted by edit count).
+		type fileEntry struct {
+			Path  string `json:"path"`
+			Edits int    `json:"edits"`
+		}
+		files := make([]fileEntry, 0, len(cur.FilesTouched))
+		for p, n := range cur.FilesTouched {
+			files = append(files, fileEntry{p, n})
+		}
+		for i := 1; i < len(files); i++ {
+			for j := i; j > 0 && files[j].Edits > files[j-1].Edits; j-- {
+				files[j], files[j-1] = files[j-1], files[j]
+			}
+		}
+		if len(files) > 10 {
+			files = files[:10]
+		}
+
+		elapsed := time.Since(cur.StartedAt)
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"id":            cur.ID,
+			"phase":         string(cur.Phase),
+			"repo_root":     cur.RepoRoot,
+			"branch":        cur.Branch,
+			"files":         files,
+			"started_at":    cur.StartedAt.Format(time.RFC3339),
+			"elapsed_min":   int(elapsed.Minutes()),
+			"commit_count":  cur.CommitCount,
+			"test_runs":     cur.TestRuns,
+			"test_failures": cur.TestFailures,
+		})}
+	})
+
+	// task-history — return recent task transitions.
+	srv.Handle("task-history", func(ctx context.Context, _ socket.Request) socket.Response {
+		since := time.Now().Add(-7 * 24 * time.Hour)
+		tasks, err := db.QueryTaskHistory(ctx, since, 20)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		type row struct {
+			ID        string `json:"id"`
+			Phase     string `json:"phase"`
+			RepoRoot  string `json:"repo_root"`
+			Branch    string `json:"branch"`
+			StartedAt string `json:"started_at"`
+			Commits   int    `json:"commits"`
+			Files     int    `json:"files"`
+		}
+		rows := make([]row, 0, len(tasks))
+		for _, t := range tasks {
+			rows = append(rows, row{
+				ID:        t.ID,
+				Phase:     t.Phase,
+				RepoRoot:  t.RepoRoot,
+				Branch:    t.Branch,
+				StartedAt: t.StartedAt.Format(time.RFC3339),
+				Commits:   t.CommitCount,
+				Files:     len(t.Files),
+			})
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(rows)}
+	})
+
+	// day-summary — return today's work summary with per-task breakdown.
+	srv.Handle("day-summary", func(ctx context.Context, _ socket.Request) socket.Response {
+		today := time.Now()
+		tasks, err := db.QueryTasksByDate(ctx, today)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		repos := make(map[string]struct{})
+		var totalCommits, completed, started int
+		allFiles := make(map[string]struct{})
+		var totalEditMin, totalVerifyMin, totalStuckMin float64
+
+		// Per-task breakdown and speed score accumulation.
+		type taskSummary struct {
+			Branch      string  `json:"branch"`
+			RepoRoot    string  `json:"repo_root"`
+			Phase       string  `json:"phase"`
+			DurationMin int     `json:"duration_min"`
+			Files       int     `json:"files"`
+			TotalEdits  int     `json:"total_edits"`
+			Commits     int     `json:"commits"`
+			TestRuns    int     `json:"test_runs"`
+			TestFails   int     `json:"test_failures"`
+			Completed   bool    `json:"completed"`
+			SpeedScore  float64 `json:"speed_score"` // size-weighted velocity
+		}
+		var taskList []taskSummary
+		var speedScoreSum, speedWeightSum float64
+
+		for _, t := range tasks {
+			started++
+			if t.RepoRoot != "" {
+				repos[t.RepoRoot] = struct{}{}
+			}
+			totalCommits += t.CommitCount
+			isCompleted := t.CompletedAt != nil
+			if isCompleted {
+				completed++
+			}
+			totalEdits := 0
+			for f, n := range t.Files {
+				allFiles[f] = struct{}{}
+				totalEdits += n
+			}
+
+			duration := t.LastActivity.Sub(t.StartedAt).Minutes()
+			switch t.Phase {
+			case "verifying":
+				totalVerifyMin += duration
+			case "stuck":
+				totalStuckMin += duration
+			default:
+				totalEditMin += duration
+			}
+
+			// Speed score: edits-per-minute, weighted by task size (file count).
+			// Only scored for completed tasks with meaningful duration.
+			var score float64
+			if isCompleted && duration > 1 && len(t.Files) > 0 {
+				score = float64(totalEdits) / duration // edits per minute
+				weight := float64(len(t.Files))
+				speedScoreSum += score * weight
+				speedWeightSum += weight
+			}
+
+			taskList = append(taskList, taskSummary{
+				Branch:      t.Branch,
+				RepoRoot:    t.RepoRoot,
+				Phase:       t.Phase,
+				DurationMin: int(duration),
+				Files:       len(t.Files),
+				TotalEdits:  totalEdits,
+				Commits:     t.CommitCount,
+				TestRuns:    t.TestRuns,
+				TestFails:   t.TestFailures,
+				Completed:   isCompleted,
+				SpeedScore:  score,
+			})
+		}
+
+		repoList := make([]string, 0, len(repos))
+		for r := range repos {
+			repoList = append(repoList, r)
+		}
+
+		// Aggregate speed score (weighted average across completed tasks).
+		var daySpeedScore float64
+		if speedWeightSum > 0 {
+			daySpeedScore = speedScoreSum / speedWeightSum
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"date":              today.Format("2006-01-02"),
+			"repos":             repoList,
+			"tasks_started":     started,
+			"tasks_completed":   completed,
+			"total_commits":     totalCommits,
+			"files_touched":     len(allFiles),
+			"editing_minutes":   int(totalEditMin),
+			"verifying_minutes": int(totalVerifyMin),
+			"stuck_minutes":     int(totalStuckMin),
+			"tasks":             taskList,
+			"speed_score":       daySpeedScore,
+		})}
+	})
+}
+
+// --- ML socket handlers -----------------------------------------------------
+
+func registerMLHandlers(srv *socket.Server, engine *ml.Engine, dbPath string) {
+	// ml-status — health and loaded models.
+	srv.Handle("ml-status", func(ctx context.Context, _ socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"status": "disabled",
+			})}
+		}
+		err := engine.Ping(ctx)
+		status := "ok"
+		if err != nil {
+			status = "unreachable"
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"status": status,
+		})}
+	})
+
+	// ml-train — trigger retraining.
+	srv.Handle("ml-train", func(ctx context.Context, _ socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{Error: "ml engine is disabled"}
+		}
+		result, err := engine.Train(ctx, dbPath)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// ml-predict — run all predictions for current state.
+	srv.Handle("ml-predict", func(ctx context.Context, req socket.Request) socket.Response {
+		if !engine.Enabled() {
+			return socket.Response{Error: "ml engine is disabled"}
+		}
+		var p struct {
+			Endpoint string         `json:"endpoint"`
+			Features map[string]any `json:"features"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		pred, err := engine.Predict(ctx, p.Endpoint, p.Features)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(pred)}
+	})
+}
+
+// --- MCP engine adapter ----------------------------------------------------
+
+// mcpEngineAdapter wraps inference.Engine to satisfy mcp.ToolEngine.
+type mcpEngineAdapter struct {
+	engine *inference.Engine
+}
+
+func (a *mcpEngineAdapter) CompleteWithTools(ctx context.Context, messages []mcp.Message, tools []mcp.ToolDef) (*mcp.ToolEngineResult, error) {
+	chatMsgs := make([]inference.ChatMessage, len(messages))
+	for i, m := range messages {
+		chatMsgs[i] = inference.ChatMessage{
+			Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID, Name: m.Name,
+		}
+		for _, tc := range m.ToolCalls {
+			chatMsgs[i].ToolCalls = append(chatMsgs[i].ToolCalls, inference.ChatToolCall{
+				ID: tc.ID, Type: tc.Type,
+				Function: inference.ChatToolCallFunc{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+			})
+		}
+	}
+	chatTools := make([]inference.ChatToolDef, len(tools))
+	for i, t := range tools {
+		chatTools[i] = inference.ChatToolDef{
+			Type: t.Type,
+			Function: inference.ChatToolDefFunc{
+				Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters,
+			},
+		}
+	}
+	result, err := a.engine.CompleteWithTools(ctx, chatMsgs, chatTools)
+	if err != nil {
+		return nil, err
+	}
+	out := &mcp.ToolEngineResult{Content: result.Content, Routing: result.Routing, LatencyMS: result.LatencyMS}
+	for _, tc := range result.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, mcp.ToolCall{
+			ID: tc.ID, Type: tc.Type,
+			Function: mcp.ToolCallFunc{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+		})
+	}
+	return out, nil
+}
+
+// --- ML adapter for task tracker -------------------------------------------
+
+// mlEngineAdapter wraps ml.Engine to satisfy task.MLPredictor.
+type mlEngineAdapter struct {
+	engine *ml.Engine
+}
+
+func (a *mlEngineAdapter) Predict(ctx context.Context, endpoint string, features map[string]any) (map[string]any, error) {
+	pred, err := a.engine.Predict(ctx, endpoint, features)
+	if err != nil {
+		return nil, err
+	}
+	return pred.Result, nil
+}
+
+func (a *mlEngineAdapter) Train(ctx context.Context, dbPath string) error {
+	_, err := a.engine.Train(ctx, dbPath)
+	return err
+}
+
+func (a *mlEngineAdapter) Enabled() bool {
+	return a.engine.Enabled()
+}
+
 // --- RSS monitor ------------------------------------------------------------
 
 const (
@@ -867,37 +1724,7 @@ func runRSSMonitor(ctx context.Context, log *slog.Logger, current *atomic.Int64)
 	}
 }
 
-// readRSSMB returns the current process RSS in megabytes by parsing
-// /proc/self/status.  Returns an error if the file cannot be read or parsed.
-func readRSSMB() (int64, error) {
-	f, err := os.Open("/proc/self/status")
-	if err != nil {
-		return 0, fmt.Errorf("open /proc/self/status: %w", err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "VmRSS:") {
-			continue
-		}
-		// Format: "VmRSS:   12345 kB"
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			break
-		}
-		kb, err := strconv.ParseInt(fields[1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("parse VmRSS: %w", err)
-		}
-		return kb / 1024, nil
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("scan /proc/self/status: %w", err)
-	}
-	return 0, fmt.Errorf("VmRSS not found in /proc/self/status")
-}
+// readRSSMB is implemented in rss_linux.go and rss_darwin.go.
 
 // --- Daily digest scheduler -------------------------------------------------
 
@@ -979,11 +1806,16 @@ func defaultDBPath() string {
 }
 
 func defaultSocketPath() string {
-	runtime := os.Getenv("XDG_RUNTIME_DIR")
-	if runtime == "" {
-		runtime = fmt.Sprintf("/run/user/%d", os.Getuid())
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "sigild.sock")
 	}
-	return filepath.Join(runtime, "sigild.sock")
+	// Linux: /run/user/<uid> is the conventional runtime dir.
+	// macOS: /run doesn't exist — use os.TempDir() which returns
+	// the per-user $TMPDIR (e.g. /var/folders/xx/.../T/).
+	if goruntime.GOOS == "darwin" {
+		return filepath.Join(os.TempDir(), "sigild.sock")
+	}
+	return fmt.Sprintf("/run/user/%d/sigild.sock", os.Getuid())
 }
 
 func homeDir() string {

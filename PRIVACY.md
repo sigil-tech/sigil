@@ -17,6 +17,7 @@ Sigil observes your workflow at the metadata level — never the content:
 | **Process names** | Names of running processes (e.g., `nvim`, `go`, `docker`) — not arguments or environment variables |
 | **Window focus** | Active window title and app name on Hyprland — not window contents or input |
 | **AI interactions** | Query category, routing (local/cloud), and latency — not query text unless you enable logging |
+| **Clipboard changes** | Content MIME type, byte length, and source application — never the actual clipboard content |
 
 All records include a timestamp and are stored in a local SQLite database.
 
@@ -27,7 +28,7 @@ All records include a timestamp and are stored in a local SQLite database.
 - **File contents** — Sigil never reads or stores the text inside your files
 - **Keystrokes** — No keystroke logger is present
 - **Screen capture** — No screenshots or screen recordings
-- **Clipboard** — The clipboard is never accessed
+- **Clipboard content** — Only the MIME type and byte length are recorded, never the actual copied text or data
 - **Command arguments** — For privacy, only the base command name is recorded by the process monitor (terminal commands capture the full string you typed, but only what your shell sends)
 - **Environment variables** — `.env` files and shell environment are never read
 
@@ -113,6 +114,26 @@ personal data. Fleet is disabled by default.
 [fleet]
 enabled = false   # set to true to opt in
 ```
+
+---
+
+## AI Mode context (Sigil Shell)
+
+When using AI mode in the Sigil Shell (Alt+Tab to toggle), the following
+workflow metadata is included as context with your query:
+
+- **Current working directory** — the absolute path of your shell CWD
+- **Active git branch** — the branch name in the current repo
+- **Recent file paths** — the 5 most recently edited files (paths only, not contents)
+- **Recent terminal commands** — the 5 most recently executed commands
+- **Conversation history** — prior turns in the current AI session (cleared on restart)
+
+When inference is routed to cloud (modes: `remote` or `remotefirst`), this
+metadata is sent to the configured cloud provider along with your query text.
+**No file contents are ever sent.** The route badge on each AI response shows
+whether the query was handled locally (cyan) or via cloud (amber).
+
+To keep all AI queries on-device, set `mode = "local"` in your config.
 
 ---
 

@@ -12,16 +12,82 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// DefaultFleetEndpoint is the canonical fleet reporting URL.
+const DefaultFleetEndpoint = "https://fleet.sigil.dev/api/v1"
+
+// DefaultCloudSyncURL is the canonical cloud sync ingest URL.
+const DefaultCloudSyncURL = "https://ingest.sigil.cloud/api/v1"
+
 // Config holds every tunable parameter for sigild.
 // Zero values mean "use the built-in default" so callers can detect which
 // fields were actually set by the file.
 type Config struct {
-	Daemon    DaemonConfig    `toml:"daemon"`
-	Notifier  NotifierConfig  `toml:"notifier"`
-	Inference InferenceConfig `toml:"inference"`
-	Retention RetentionConfig `toml:"retention"`
-	Fleet     FleetConfig     `toml:"fleet"`
-	Network   NetworkConfig   `toml:"network"`
+	Daemon    DaemonConfig            `toml:"daemon"`
+	Notifier  NotifierConfig          `toml:"notifier"`
+	Inference InferenceConfig         `toml:"inference"`
+	ML        MLConfig                `toml:"ml"`
+	Plugins   map[string]PluginConfig `toml:"plugins"`
+	Retention RetentionConfig         `toml:"retention"`
+	Schedule  ScheduleConfig          `toml:"schedule"`
+	Fleet     FleetConfig             `toml:"fleet"`
+	Network   NetworkConfig           `toml:"network"`
+	Cloud     CloudConfig             `toml:"cloud"`
+	CloudSync CloudSyncConfig         `toml:"cloud_sync"`
+}
+
+// PluginConfig defines a single plugin's configuration.
+type PluginConfig struct {
+	Enabled      bool              `toml:"enabled"`
+	Binary       string            `toml:"binary"`
+	Daemon       bool              `toml:"daemon"` // true = run as long-lived process
+	PollInterval string            `toml:"poll_interval"`
+	HealthURL    string            `toml:"health_url"`
+	Env          map[string]string `toml:"env"`
+}
+
+// MLConfig configures the ML prediction sidecar.
+type MLConfig struct {
+	Mode         string        `toml:"mode"`          // local | localfirst | remotefirst | remote | disabled
+	RetrainEvery int           `toml:"retrain_every"` // retrain after N completed tasks (0 = manual)
+	Local        MLLocalConfig `toml:"local"`
+	Cloud        MLCloudConfig `toml:"cloud"`
+}
+
+// MLLocalConfig configures the local sigil-ml sidecar.
+type MLLocalConfig struct {
+	Enabled   bool   `toml:"enabled"`
+	ServerURL string `toml:"server_url"`
+	ServerBin string `toml:"server_bin"`
+}
+
+// MLCloudConfig configures the cloud ML API.
+type MLCloudConfig struct {
+	Enabled bool   `toml:"enabled"`
+	BaseURL string `toml:"base_url"`
+	APIKey  string `toml:"api_key"`
+}
+
+// CloudConfig holds cloud tier and authentication settings.
+type CloudConfig struct {
+	Tier   string `toml:"tier"` // "free", "pro", "team"
+	APIKey string `toml:"api_key"`
+	OrgID  string `toml:"org_id"` // Team tier only
+}
+
+// CloudSyncConfig controls the sync agent behavior.
+type CloudSyncConfig struct {
+	Enabled      *bool  `toml:"enabled"`
+	APIURL       string `toml:"api_url"`
+	BatchSize    int    `toml:"batch_size"`
+	PollInterval string `toml:"poll_interval"` // duration string, e.g. "60s"
+}
+
+// IsEnabled returns whether cloud sync is enabled (defaults to false if unset).
+func (c CloudSyncConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return false
+	}
+	return *c.Enabled
 }
 
 // NetworkConfig controls the optional TCP listener.
@@ -37,8 +103,10 @@ type DaemonConfig struct {
 	LogLevel          string   `toml:"log_level"`
 	WatchDirs         []string `toml:"watch_dirs"`
 	RepoDirs          []string `toml:"repo_dirs"`
+	IgnorePatterns    []string `toml:"ignore_patterns"`
 	DBPath            string   `toml:"db_path"`
 	SocketPath        string   `toml:"socket_path"`
+	MaxWatches        int      `toml:"max_watches"`        // cap on watched directories (0 = default 4096)
 	ActuationsEnabled *bool    `toml:"actuations_enabled"` // nil = default true
 }
 
@@ -52,8 +120,21 @@ func (d DaemonConfig) IsActuationsEnabled() bool {
 
 // NotifierConfig controls how suggestions are surfaced.
 type NotifierConfig struct {
-	Level      int    `toml:"level"`
+	Level      *int   `toml:"level"`
 	DigestTime string `toml:"digest_time"` // "HH:MM" in local time
+}
+
+// LevelOrDefault returns the notification level, defaulting to 2 (Ambient).
+func (n NotifierConfig) LevelOrDefault() int {
+	if n.Level == nil {
+		return 2
+	}
+	return *n.Level
+}
+
+// ScheduleConfig controls analysis timing.
+type ScheduleConfig struct {
+	AnalyzeEvery string `toml:"analyze_every"` // duration string, e.g. "5m", "1h"
 }
 
 // InferenceConfig configures the inference engine backends.
@@ -69,6 +150,7 @@ type InferenceLocalConfig struct {
 	ServerURL string `toml:"server_url"`
 	ServerBin string `toml:"server_bin"`
 	ModelPath string `toml:"model_path"`
+	ModelName string `toml:"model_name"`
 	CtxSize   int    `toml:"ctx_size"`
 	GPULayers int    `toml:"gpu_layers"`
 }
@@ -95,6 +177,14 @@ type FleetConfig struct {
 	NodeID   string `toml:"node_id"`  // auto-generated if empty
 }
 
+// ApplyDefaults fills in zero-value fields that have well-known defaults.
+// Call after Load to ensure fleet-enabled configs get the production endpoint.
+func (c *Config) ApplyDefaults() {
+	if c.Fleet.Endpoint == "" && c.Fleet.Enabled {
+		c.Fleet.Endpoint = DefaultFleetEndpoint
+	}
+}
+
 // Defaults returns a Config populated with sensible built-in values.
 // This is what the daemon uses when no config file exists.
 func Defaults() *Config {
@@ -103,7 +193,6 @@ func Defaults() *Config {
 			LogLevel: "info",
 		},
 		Notifier: NotifierConfig{
-			Level:      2, // LevelAmbient
 			DigestTime: "09:00",
 		},
 		Inference: InferenceConfig{
@@ -111,6 +200,12 @@ func Defaults() *Config {
 		},
 		Retention: RetentionConfig{
 			RawEventDays: 90,
+		},
+		Fleet: FleetConfig{
+			Endpoint: DefaultFleetEndpoint,
+		},
+		CloudSync: CloudSyncConfig{
+			APIURL: DefaultCloudSyncURL,
 		},
 	}
 }
@@ -171,20 +266,30 @@ func merge(dst, src *Config) {
 	if len(src.Daemon.RepoDirs) > 0 {
 		dst.Daemon.RepoDirs = expandDirs(src.Daemon.RepoDirs)
 	}
+	if len(src.Daemon.IgnorePatterns) > 0 {
+		dst.Daemon.IgnorePatterns = src.Daemon.IgnorePatterns
+	}
 	if src.Daemon.DBPath != "" {
 		dst.Daemon.DBPath = expandHome(src.Daemon.DBPath)
 	}
 	if src.Daemon.SocketPath != "" {
 		dst.Daemon.SocketPath = expandHome(src.Daemon.SocketPath)
 	}
+	if src.Daemon.MaxWatches != 0 {
+		dst.Daemon.MaxWatches = src.Daemon.MaxWatches
+	}
 
-	// Notifier: level 0 (Silent) is a valid non-default, so we use a sentinel.
-	// We trust whatever the file sets.
-	if src.Notifier.Level != 0 {
+	// Notifier: *int pointer distinguishes absent from explicitly 0 (Silent).
+	if src.Notifier.Level != nil {
 		dst.Notifier.Level = src.Notifier.Level
 	}
 	if src.Notifier.DigestTime != "" {
 		dst.Notifier.DigestTime = src.Notifier.DigestTime
+	}
+
+	// Schedule
+	if src.Schedule.AnalyzeEvery != "" {
+		dst.Schedule.AnalyzeEvery = src.Schedule.AnalyzeEvery
 	}
 
 	if src.Inference.Mode != "" {
@@ -201,6 +306,9 @@ func merge(dst, src *Config) {
 	}
 	if src.Inference.Local.ModelPath != "" {
 		dst.Inference.Local.ModelPath = src.Inference.Local.ModelPath
+	}
+	if src.Inference.Local.ModelName != "" {
+		dst.Inference.Local.ModelName = src.Inference.Local.ModelName
 	}
 	if src.Inference.Local.CtxSize != 0 {
 		dst.Inference.Local.CtxSize = src.Inference.Local.CtxSize
@@ -252,6 +360,62 @@ func merge(dst, src *Config) {
 	}
 	if len(src.Network.AllowedCredentials) > 0 {
 		dst.Network.AllowedCredentials = src.Network.AllowedCredentials
+	}
+
+	// Plugins (map — just replace entirely if set in file)
+	if len(src.Plugins) > 0 {
+		dst.Plugins = src.Plugins
+	}
+
+	// ML
+	if src.ML.Mode != "" {
+		dst.ML.Mode = src.ML.Mode
+	}
+	if src.ML.RetrainEvery != 0 {
+		dst.ML.RetrainEvery = src.ML.RetrainEvery
+	}
+	if src.ML.Local.Enabled {
+		dst.ML.Local.Enabled = true
+	}
+	if src.ML.Local.ServerURL != "" {
+		dst.ML.Local.ServerURL = src.ML.Local.ServerURL
+	}
+	if src.ML.Local.ServerBin != "" {
+		dst.ML.Local.ServerBin = src.ML.Local.ServerBin
+	}
+	if src.ML.Cloud.Enabled {
+		dst.ML.Cloud.Enabled = true
+	}
+	if src.ML.Cloud.BaseURL != "" {
+		dst.ML.Cloud.BaseURL = src.ML.Cloud.BaseURL
+	}
+	if src.ML.Cloud.APIKey != "" {
+		dst.ML.Cloud.APIKey = src.ML.Cloud.APIKey
+	}
+
+	// Cloud tier
+	if src.Cloud.Tier != "" {
+		dst.Cloud.Tier = src.Cloud.Tier
+	}
+	if src.Cloud.APIKey != "" {
+		dst.Cloud.APIKey = src.Cloud.APIKey
+	}
+	if src.Cloud.OrgID != "" {
+		dst.Cloud.OrgID = src.Cloud.OrgID
+	}
+
+	// Cloud sync
+	if src.CloudSync.Enabled != nil {
+		dst.CloudSync.Enabled = src.CloudSync.Enabled
+	}
+	if src.CloudSync.APIURL != "" {
+		dst.CloudSync.APIURL = src.CloudSync.APIURL
+	}
+	if src.CloudSync.BatchSize != 0 {
+		dst.CloudSync.BatchSize = src.CloudSync.BatchSize
+	}
+	if src.CloudSync.PollInterval != "" {
+		dst.CloudSync.PollInterval = src.CloudSync.PollInterval
 	}
 }
 

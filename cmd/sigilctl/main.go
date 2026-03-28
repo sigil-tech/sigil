@@ -25,13 +25,19 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
+	"github.com/wambozi/sigil/internal/config"
 	"github.com/wambozi/sigil/internal/event"
 	"github.com/wambozi/sigil/internal/inference"
+	"github.com/wambozi/sigil/internal/plugin"
 	"github.com/wambozi/sigil/internal/socket"
 	"github.com/wambozi/sigil/internal/store"
 )
@@ -94,6 +100,24 @@ func run() error {
 		return cmdFleet(*socketPath, args)
 	case "credential":
 		return cmdCredential(*socketPath, args)
+	case "task":
+		return cmdTask(*socketPath, args)
+	case "day":
+		return cmdDay(*socketPath)
+	case "ml":
+		return cmdML(*socketPath, args)
+	case "plugin":
+		return cmdPlugin(args)
+	case "ask":
+		return cmdAsk(*socketPath, args)
+	case "correct":
+		return cmdCorrect(*socketPath, args)
+	case "stop":
+		return cmdStop(*socketPath)
+	case "start":
+		return cmdStart(*socketPath)
+	case "auth":
+		return cmdAuth(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
@@ -517,11 +541,13 @@ func printEvents(events []event.Event) error {
 // --- Path helpers -----------------------------------------------------------
 
 func defaultSocketPath() string {
-	runtime := os.Getenv("XDG_RUNTIME_DIR")
-	if runtime == "" {
-		runtime = fmt.Sprintf("/run/user/%d", os.Getuid())
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "sigild.sock")
 	}
-	return filepath.Join(runtime, "sigild.sock")
+	if goruntime.GOOS == "darwin" {
+		return filepath.Join(os.TempDir(), "sigild.sock")
+	}
+	return fmt.Sprintf("/run/user/%d/sigild.sock", os.Getuid())
 }
 
 func defaultDBPath() string {
@@ -899,10 +925,136 @@ func cmdCredentialRevoke(socketPath string, args []string) error {
 	return nil
 }
 
+// cmdAuth dispatches auth subcommands: login, status, logout.
+func cmdAuth(socketPath string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: sigilctl auth login|status|logout")
+	}
+	switch args[0] {
+	case "login":
+		return cmdAuthLogin()
+	case "status":
+		return cmdAuthStatus()
+	case "logout":
+		return cmdAuthLogout()
+	default:
+		return fmt.Errorf("unknown auth command: %s", args[0])
+	}
+}
+
+// cmdAuthLogin prompts for an API key and writes it to the config file.
+func cmdAuthLogin() error {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter your Sigil API key: ")
+	key, readErr := reader.ReadString('\n')
+	if readErr != nil {
+		return fmt.Errorf("read API key: %w", readErr)
+	}
+	key = strings.TrimSpace(key)
+
+	if key == "" {
+		return fmt.Errorf("API key cannot be empty")
+	}
+	if !strings.HasPrefix(key, "sk-sigil-") {
+		return fmt.Errorf("invalid API key format: must start with \"sk-sigil-\"")
+	}
+
+	cfgPath := config.DefaultPath()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		cfg = config.Defaults()
+	}
+
+	cfg.Cloud.APIKey = key
+
+	return writeConfig(cfgPath, cfg)
+}
+
+// cmdAuthStatus reads the config and displays tier, API key validity, and enabled features.
+func cmdAuthStatus() error {
+	cfgPath := config.DefaultPath()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	tier := cfg.Cloud.Tier
+	if tier == "" {
+		tier = "free"
+	}
+	fmt.Printf("Tier:      %s\n", tier)
+
+	if cfg.Cloud.APIKey != "" {
+		key := cfg.Cloud.APIKey
+		if len(key) >= 13 {
+			fmt.Printf("API key:   %s...%s\n", key[:9], key[len(key)-4:])
+		} else {
+			fmt.Printf("API key:   (set, too short to display)\n")
+		}
+	} else {
+		fmt.Println("API key:   (not set)")
+	}
+
+	if cfg.Cloud.OrgID != "" {
+		fmt.Printf("Org ID:    %s\n", cfg.Cloud.OrgID)
+	}
+
+	fmt.Printf("Inference: %s\n", cfg.Inference.Mode)
+	fmt.Printf("Sync:      %t\n", cfg.CloudSync.IsEnabled())
+
+	return nil
+}
+
+// cmdAuthLogout removes the API key from the config file.
+func cmdAuthLogout() error {
+	cfgPath := config.DefaultPath()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg.Cloud.APIKey == "" {
+		fmt.Println("No API key configured.")
+		return nil
+	}
+
+	cfg.Cloud.APIKey = ""
+
+	if err := writeConfig(cfgPath, cfg); err != nil {
+		return err
+	}
+	fmt.Println("API key removed.")
+	return nil
+}
+
+// writeConfig marshals cfg to TOML and writes it atomically to path
+// via a temp-file + rename pattern.
+func writeConfig(path string, cfg *config.Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename config: %w", err)
+	}
+	fmt.Printf("Config written to %s\n", path)
+	return nil
+}
+
 func printUsage() {
 	fmt.Print(`sigilctl — Sigil OS daemon CLI
 
 Commands:
+  start                         Start the sigild daemon
+  stop                          Stop the running sigild daemon
   status                        Show daemon health and version
   events [-n N] [-offline]      List the N most recent events (default 20)
   tail                          Poll and stream live events every 2s
@@ -925,9 +1077,15 @@ Commands:
   fleet status                  Show fleet reporting opt-in status
   fleet preview                 Show what fleet data will be sent
   fleet opt-out                 Disable fleet reporting
+  auth login                    Authenticate with a Sigil cloud API key
+  auth status                   Show current tier and API key status
+  auth logout                   Remove API key from config
   credential add <name>         Generate a new remote-access credential
   credential list               List all credentials
   credential revoke <name>      Revoke a credential immediately
+  task                          Show current inferred task
+  task history                  Recent task transitions
+  day                           Today's work summary
   purge                         Delete all local data (requires confirmation)
   export                        Export all data as newline-delimited JSON
 
@@ -935,4 +1093,517 @@ Flags:
   -socket PATH    Unix socket path (default: $XDG_RUNTIME_DIR/sigild.sock)
   -db PATH        SQLite path for offline reads
 `)
+}
+
+// --- Task commands ----------------------------------------------------------
+
+func cmdTask(socketPath string, args []string) error {
+	if len(args) > 0 && args[0] == "history" {
+		return cmdTaskHistory(socketPath)
+	}
+
+	resp, err := call(socketPath, "task", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var t struct {
+		ID          string `json:"id"`
+		Phase       string `json:"phase"`
+		RepoRoot    string `json:"repo_root"`
+		Branch      string `json:"branch"`
+		ElapsedMin  int    `json:"elapsed_min"`
+		CommitCount int    `json:"commit_count"`
+		TestRuns    int    `json:"test_runs"`
+		TestFails   int    `json:"test_failures"`
+		Files       []struct {
+			Path  string `json:"path"`
+			Edits int    `json:"edits"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(resp.Payload, &t); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if t.Phase == "idle" {
+		fmt.Println("No active task (idle)")
+		return nil
+	}
+
+	repo := filepath.Base(t.RepoRoot)
+	fmt.Printf("Task: %s on %s (%s)\n", t.Phase, t.Branch, repo)
+	fmt.Printf("  Phase:    %s (%dm)\n", t.Phase, t.ElapsedMin)
+	if t.Branch != "" {
+		fmt.Printf("  Branch:   %s\n", t.Branch)
+	}
+	fmt.Printf("  Repo:     %s\n", t.RepoRoot)
+
+	if len(t.Files) > 0 {
+		fmt.Printf("  Files:    ")
+		for i, f := range t.Files {
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			fmt.Printf("%s (+%d)", filepath.Base(f.Path), f.Edits)
+			if i >= 4 {
+				fmt.Printf(" ... +%d more", len(t.Files)-5)
+				break
+			}
+		}
+		fmt.Println()
+	}
+	fmt.Printf("  Tests:    %d runs, %d failures\n", t.TestRuns, t.TestFails)
+	fmt.Printf("  Commits:  %d\n", t.CommitCount)
+	return nil
+}
+
+func cmdTaskHistory(socketPath string) error {
+	resp, err := call(socketPath, "task-history", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var tasks []struct {
+		ID        string `json:"id"`
+		Phase     string `json:"phase"`
+		RepoRoot  string `json:"repo_root"`
+		Branch    string `json:"branch"`
+		StartedAt string `json:"started_at"`
+		Commits   int    `json:"commits"`
+		Files     int    `json:"files"`
+	}
+	if err := json.Unmarshal(resp.Payload, &tasks); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("No task history")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tPHASE\tREPO\tBRANCH\tCOMMITS\tFILES")
+	for _, t := range tasks {
+		ts, _ := time.Parse(time.RFC3339, t.StartedAt)
+		repo := filepath.Base(t.RepoRoot)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
+			ts.Format("15:04"), t.Phase, repo, t.Branch, t.Commits, t.Files)
+	}
+	return w.Flush()
+}
+
+func cmdDay(socketPath string) error {
+	resp, err := call(socketPath, "day-summary", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var d struct {
+		Date             string   `json:"date"`
+		Repos            []string `json:"repos"`
+		TasksStarted     int      `json:"tasks_started"`
+		TasksCompleted   int      `json:"tasks_completed"`
+		TotalCommits     int      `json:"total_commits"`
+		FilesTouched     int      `json:"files_touched"`
+		EditingMinutes   int      `json:"editing_minutes"`
+		VerifyingMinutes int      `json:"verifying_minutes"`
+		StuckMinutes     int      `json:"stuck_minutes"`
+		SpeedScore       float64  `json:"speed_score"`
+		Tasks            []struct {
+			Branch      string  `json:"branch"`
+			RepoRoot    string  `json:"repo_root"`
+			Phase       string  `json:"phase"`
+			DurationMin int     `json:"duration_min"`
+			Files       int     `json:"files"`
+			TotalEdits  int     `json:"total_edits"`
+			Commits     int     `json:"commits"`
+			TestRuns    int     `json:"test_runs"`
+			TestFails   int     `json:"test_failures"`
+			Completed   bool    `json:"completed"`
+			SpeedScore  float64 `json:"speed_score"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(resp.Payload, &d); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Today (%s)\n", d.Date)
+
+	if len(d.Repos) > 0 {
+		repos := make([]string, len(d.Repos))
+		for i, r := range d.Repos {
+			repos[i] = filepath.Base(r)
+		}
+		fmt.Printf("  Repos:     %s\n", strings.Join(repos, ", "))
+	}
+	fmt.Printf("  Tasks:     %d started, %d completed\n", d.TasksStarted, d.TasksCompleted)
+	fmt.Printf("  Commits:   %d\n", d.TotalCommits)
+	fmt.Printf("  Files:     %d touched\n", d.FilesTouched)
+	fmt.Printf("  Time:      editing %dm | verifying %dm | stuck %dm\n",
+		d.EditingMinutes, d.VerifyingMinutes, d.StuckMinutes)
+
+	if d.SpeedScore > 0 {
+		fmt.Printf("  Speed:     %.1f edits/min (size-weighted)\n", d.SpeedScore)
+	}
+
+	if len(d.Tasks) > 0 {
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "  BRANCH\tPHASE\tTIME\tFILES\tCOMMITS\tTESTS")
+		for _, t := range d.Tasks {
+			status := t.Phase
+			if t.Completed {
+				status = "done"
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%dm\t%d\t%d\t%d/%d\n",
+				t.Branch, status, t.DurationMin, t.Files, t.Commits, t.TestRuns-t.TestFails, t.TestRuns)
+		}
+		w.Flush()
+	}
+	return nil
+}
+
+// --- ML commands -----------------------------------------------------------
+
+func cmdML(socketPath string, args []string) error {
+	if len(args) == 0 {
+		return cmdMLStatus(socketPath)
+	}
+	switch args[0] {
+	case "status":
+		return cmdMLStatus(socketPath)
+	case "train":
+		return cmdMLTrain(socketPath)
+	case "predict":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sigilctl ml predict <endpoint> [key=value ...]")
+		}
+		return cmdMLPredict(socketPath, args[1], args[2:])
+	default:
+		return fmt.Errorf("unknown ml subcommand %q — use: status, train, predict", args[0])
+	}
+}
+
+func cmdMLStatus(socketPath string) error {
+	resp, err := call(socketPath, "ml-status", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var s struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(resp.Payload, &s); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	fmt.Printf("ML engine: %s\n", s.Status)
+	return nil
+}
+
+func cmdMLTrain(socketPath string) error {
+	resp, err := call(socketPath, "ml-train", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Println("Training triggered")
+	return nil
+}
+
+func cmdMLPredict(socketPath string, endpoint string, kvPairs []string) error {
+	features := make(map[string]any)
+	for _, kv := range kvPairs {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		// Try to parse as number.
+		if f, err := strconv.ParseFloat(parts[1], 64); err == nil {
+			features[parts[0]] = f
+		} else {
+			features[parts[0]] = parts[1]
+		}
+	}
+
+	resp, err := call(socketPath, "ml-predict", map[string]any{
+		"endpoint": endpoint,
+		"features": features,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var pred struct {
+		Endpoint  string         `json:"endpoint"`
+		Result    map[string]any `json:"result"`
+		Routing   string         `json:"routing"`
+		LatencyMS int64          `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(resp.Payload, &pred); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	fmt.Printf("Endpoint:  %s\n", pred.Endpoint)
+	fmt.Printf("Routing:   %s\n", pred.Routing)
+	fmt.Printf("Latency:   %dms\n", pred.LatencyMS)
+	for k, v := range pred.Result {
+		fmt.Printf("  %s: %v\n", k, v)
+	}
+	return nil
+}
+
+// --- Plugin commands --------------------------------------------------------
+
+func cmdPlugin(args []string) error {
+	if len(args) == 0 {
+		return cmdPluginList()
+	}
+	switch args[0] {
+	case "list":
+		return cmdPluginList()
+	case "list-available":
+		return cmdPluginListAvailable(args[1:])
+	case "install":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sigilctl plugin install <name> [--brew]")
+		}
+		method := plugin.DetectInstallMethod()
+		for _, a := range args[2:] {
+			if a == "--brew" {
+				method = plugin.InstallBrew
+			}
+		}
+		return plugin.Install(args[1], method)
+	case "setup":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sigilctl plugin setup <name>")
+		}
+		reader := bufio.NewReader(os.Stdin)
+		toml, err := plugin.Setup(args[1], reader)
+		if err != nil {
+			return err
+		}
+		fmt.Println("\nAdd this to your ~/.config/sigil/config.toml:")
+		fmt.Println(toml)
+		return nil
+	default:
+		return fmt.Errorf("unknown plugin subcommand %q — use: list, list-available, install, setup", args[0])
+	}
+}
+
+func cmdPluginList() error {
+	reg := plugin.Registry()
+	installed := 0
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "PLUGIN\tSTATUS\tCATEGORY\tDESCRIPTION")
+	for _, e := range reg {
+		status := "not installed"
+		if plugin.IsInstalled(e.Name) {
+			status = "installed"
+			installed++
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Name, status, e.Category, e.Description)
+	}
+	w.Flush()
+	fmt.Printf("\n%d/%d plugins installed\n", installed, len(reg))
+	return nil
+}
+
+func cmdPluginListAvailable(args []string) error {
+	version := ""
+	if len(args) > 0 {
+		version = args[0]
+	}
+
+	var entries []plugin.RegistryEntry
+	if version != "" {
+		entries = plugin.ByVersion(version)
+		if len(entries) == 0 {
+			return fmt.Errorf("no plugins found for version %q", version)
+		}
+	} else {
+		entries = plugin.Registry()
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "PLUGIN\tVERSION\tCATEGORY\tLANG\tINSTALLED\tDESCRIPTION")
+	for _, e := range entries {
+		installed := "no"
+		if plugin.IsInstalled(e.Name) {
+			installed = "yes"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			e.Name, e.Version, e.Category, e.Language, installed, e.Description)
+	}
+	w.Flush()
+	return nil
+}
+
+// --- Ask command -----------------------------------------------------------
+
+func cmdAsk(socketPath string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: sigilctl ask \"your question here\"")
+	}
+	query := strings.Join(args, " ")
+
+	resp, err := call(socketPath, "ask", map[string]string{"query": query})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		Answer        string `json:"answer"`
+		ToolCallsMade int    `json:"tool_calls_made"`
+		LatencyMS     int64  `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+
+	fmt.Println(result.Answer)
+	if result.ToolCallsMade > 0 {
+		fmt.Printf("\n[%d tool calls, %dms]\n", result.ToolCallsMade, result.LatencyMS)
+	}
+	return nil
+}
+
+// --- Correct command -------------------------------------------------------
+
+func cmdCorrect(socketPath string, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: sigilctl correct <event_id> <category>\n  categories: creating, refining, verifying, navigating, researching, integrating, communicating, idle")
+	}
+
+	eventID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid event_id %q: %w", args[0], err)
+	}
+
+	resp, err := call(socketPath, "correct", map[string]any{
+		"event_id":         eventID,
+		"correct_category": args[1],
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Printf("Correction recorded: event %d → %s\n", eventID, args[1])
+	return nil
+}
+
+// --- Start/Stop commands ---------------------------------------------------
+
+func cmdStop(socketPath string) error {
+	resp, err := call(socketPath, "shutdown", nil)
+	if err != nil {
+		fmt.Println("sigild is not running")
+		return nil
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Println("sigild is shutting down")
+	return nil
+}
+
+func cmdStart(socketPath string) error {
+	// Check if daemon is already running.
+	if _, err := call(socketPath, "status", nil); err == nil {
+		fmt.Println("sigild is already running")
+		return nil
+	}
+
+	switch goruntime.GOOS {
+	case "darwin":
+		return startDarwin()
+	case "linux":
+		return startLinux()
+	default:
+		return startDirect()
+	}
+}
+
+func startDarwin() error {
+	label := "com.sigil.sigild"
+	// Try launchctl kickstart first (works if agent is loaded but stopped).
+	uid := os.Getuid()
+	out, err := exec.Command("launchctl", "kickstart", fmt.Sprintf("gui/%d/%s", uid, label)).CombinedOutput()
+	if err == nil {
+		fmt.Println("sigild started via launchd")
+		return nil
+	}
+
+	// Fall back to bootstrap/load if the agent isn't loaded.
+	home, _ := os.UserHomeDir()
+	plist := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+	if _, statErr := os.Stat(plist); statErr != nil {
+		fmt.Println("launchd plist not found — run 'sigild init' first, or starting directly")
+		return startDirect()
+	}
+
+	out, err = exec.Command("launchctl", "load", plist).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("launchctl load: %w — %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Println("sigild started via launchd")
+	return nil
+}
+
+func startLinux() error {
+	out, err := exec.Command("systemctl", "--user", "start", "sigild.service").CombinedOutput()
+	if err == nil {
+		fmt.Println("sigild started via systemd")
+		return nil
+	}
+
+	// If systemd unit not found, fall back to direct start.
+	if strings.Contains(string(out), "not found") || strings.Contains(string(out), "No such file") {
+		fmt.Println("systemd unit not found — run 'sigild init' first, or starting directly")
+		return startDirect()
+	}
+	return fmt.Errorf("systemctl start: %w — %s", err, strings.TrimSpace(string(out)))
+}
+
+func startDirect() error {
+	exe, err := exec.LookPath("sigild")
+	if err != nil {
+		return fmt.Errorf("sigild not found in PATH: %w", err)
+	}
+
+	cmd := exec.Command(exe)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start sigild: %w", err)
+	}
+
+	// Detach — don't wait for the child.
+	_ = cmd.Process.Release()
+	fmt.Printf("sigild started (pid %d)\n", cmd.Process.Pid)
+	return nil
 }

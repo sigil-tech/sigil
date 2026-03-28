@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,21 +31,33 @@ func discardLogger() *slog.Logger {
 
 // stubPlatform is a no-op platform that records the number of send calls.
 type stubPlatform struct {
+	mu    sync.Mutex
 	sends int
 }
 
-func (p *stubPlatform) Send(_, _ string, _ bool) { p.sends++ }
-func (p *stubPlatform) Execute(_ string) error   { return nil }
+func (p *stubPlatform) Send(_, _ string, _ bool) {
+	p.mu.Lock()
+	p.sends++
+	p.mu.Unlock()
+}
+func (p *stubPlatform) Execute(_ string) error { return nil }
+
+func (p *stubPlatform) Sends() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sends
+}
 
 // --- Rate limiting tests ----------------------------------------------------
 
 func TestRateLimit_burstSuppressed(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// First call: should pass.
@@ -60,11 +73,12 @@ func TestRateLimit_burstSuppressed(t *testing.T) {
 
 func TestRateLimit_afterIntervalSucceeds(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// Simulate that the last shown time was more than the interval ago.
@@ -77,11 +91,12 @@ func TestRateLimit_afterIntervalSucceeds(t *testing.T) {
 
 func TestRateLimit_conversationalInterval(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelConversational,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// First call succeeds.
@@ -97,24 +112,32 @@ func TestRateLimit_conversationalInterval(t *testing.T) {
 func TestSurface_ambientStoresEvenWhenRateLimited(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
-	sg := Suggestion{
+	sg1 := Suggestion{
 		Category:   "pattern",
 		Confidence: ConfidenceModerate,
 		Title:      "Test suggestion",
-		Body:       "body",
+		Body:       "body one",
+	}
+	sg2 := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceModerate,
+		Title:      "Test suggestion",
+		Body:       "body two",
 	}
 
 	// First Surface: stored and shown.
-	ntf.Surface(sg)
+	ntf.Surface(sg1)
 	// Second Surface within interval: stored but not shown (rate limited).
-	ntf.Surface(sg)
+	// Uses different body to avoid dedup (dedup is title+body keyed).
+	ntf.Surface(sg2)
 
 	// Both should be persisted in the store regardless of rate limiting.
 	ctx := context.Background()
@@ -131,11 +154,12 @@ func TestSurface_ambientStoresEvenWhenRateLimited(t *testing.T) {
 
 func TestSetLevel_and_Level(t *testing.T) {
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	levels := []Level{
@@ -160,11 +184,12 @@ func TestSurface_silent(t *testing.T) {
 	db := openTestStore(t)
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelSilent,
-		store:       db,
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelSilent,
+		store:             db,
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -186,19 +211,20 @@ func TestSurface_silent(t *testing.T) {
 	}
 
 	// Never dispatched to the platform.
-	if platform.sends != 0 {
-		t.Errorf("expected 0 platform sends at LevelSilent, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 platform sends at LevelSilent, got %d", platform.Sends())
 	}
 }
 
 func TestSurface_digest(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg1 := Suggestion{Category: "pattern", Confidence: ConfidenceModerate, Title: "First", Body: "body1"}
@@ -207,14 +233,14 @@ func TestSurface_digest(t *testing.T) {
 	ntf.Surface(sg2)
 
 	// No sends yet — digest has not been flushed.
-	if platform.sends != 0 {
-		t.Errorf("expected 0 platform sends before FlushDigest, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 platform sends before FlushDigest, got %d", platform.Sends())
 	}
 
 	// FlushDigest drains the queue and sends exactly one notification.
 	ntf.FlushDigest()
-	if platform.sends != 1 {
-		t.Errorf("expected 1 platform send after FlushDigest, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("expected 1 platform send after FlushDigest, got %d", platform.Sends())
 	}
 }
 
@@ -223,11 +249,12 @@ func TestSurface_digest(t *testing.T) {
 func TestFlushDigest(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg1 := Suggestion{Category: "insight", Confidence: ConfidenceModerate, Title: "Tip one", Body: "do this"}
@@ -237,31 +264,32 @@ func TestFlushDigest(t *testing.T) {
 
 	// First flush: two suggestions collapsed into one send.
 	ntf.FlushDigest()
-	if platform.sends != 1 {
-		t.Errorf("first FlushDigest: expected 1 send, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("first FlushDigest: expected 1 send, got %d", platform.Sends())
 	}
 
 	// Second flush: queue is empty, no additional send.
 	ntf.FlushDigest()
-	if platform.sends != 1 {
-		t.Errorf("second FlushDigest on empty queue: expected still 1 send, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("second FlushDigest on empty queue: expected still 1 send, got %d", platform.Sends())
 	}
 }
 
 func TestFlushDigest_empty(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelDigest,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelDigest,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	// Nothing queued — FlushDigest must be a no-op.
 	ntf.FlushDigest()
-	if platform.sends != 0 {
-		t.Errorf("expected 0 sends on empty FlushDigest, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 sends on empty FlushDigest, got %d", platform.Sends())
 	}
 }
 
@@ -270,11 +298,12 @@ func TestFlushDigest_empty(t *testing.T) {
 func TestSurface_conversational(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelConversational,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -302,11 +331,12 @@ func TestSurface_conversational(t *testing.T) {
 func TestSurface_lowConfidence_noCallback(t *testing.T) {
 	called := false
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
 			called = true
 		},
@@ -334,11 +364,12 @@ func TestSurface_OnSuggestionCallback(t *testing.T) {
 	)
 
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(id int64, sg Suggestion) {
 			called = true
 			callbackID = id
@@ -376,24 +407,31 @@ func TestSurface_OnSuggestionCallback(t *testing.T) {
 func TestSurface_conversationalRateLimitSuppressed(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelConversational,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelConversational,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
-	sg := Suggestion{
+	sg1 := Suggestion{
 		Category:   "pattern",
 		Confidence: ConfidenceStrong,
 		Title:      "Rate-limited conversational",
-		Body:       "first one passes, second is suppressed",
+		Body:       "first one passes",
+	}
+	sg2 := Suggestion{
+		Category:   "pattern",
+		Confidence: ConfidenceStrong,
+		Title:      "Rate-limited conversational",
+		Body:       "second is rate limited",
 	}
 
 	// First call — passes the rate limiter.
-	ntf.Surface(sg)
-	// Second call within the interval — rate limited (display goroutine not spawned).
-	ntf.Surface(sg)
+	ntf.Surface(sg1)
+	// Second call within the interval — rate limited (display suppressed).
+	ntf.Surface(sg2)
 
 	// Both suggestions are persisted regardless of rate limiting.
 	ctx := context.Background()
@@ -415,11 +453,12 @@ func TestSurface_conversationalRateLimitSuppressed(t *testing.T) {
 func TestSurface_autonomousLowConfidence(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAutonomous,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -446,11 +485,12 @@ func TestSurface_autonomousLowConfidence(t *testing.T) {
 func TestSurface_autonomousNoActionCmd(t *testing.T) {
 	db := openTestStore(t)
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       db,
-		platform:    &stubPlatform{},
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAutonomous,
+		store:             db,
+		platform:          &stubPlatform{},
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -488,11 +528,12 @@ func TestExecuteWithCountdown_success(t *testing.T) {
 
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAutonomous,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -519,8 +560,8 @@ func TestExecuteWithCountdown_success(t *testing.T) {
 
 	ntf.executeWithCountdown(id, sg)
 
-	if platform.sends != 1 {
-		t.Errorf("expected 1 platform send during countdown, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("expected 1 platform send during countdown, got %d", platform.Sends())
 	}
 }
 
@@ -533,11 +574,12 @@ func TestExecuteWithCountdown_executeFailure(t *testing.T) {
 
 	platform := &errPlatform{}
 	ntf := &Notifier{
-		level:       LevelAutonomous,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAutonomous,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 	}
 
 	sg := Suggestion{
@@ -564,8 +606,8 @@ func TestExecuteWithCountdown_executeFailure(t *testing.T) {
 	// Should not panic; the error path marks the suggestion ignored.
 	ntf.executeWithCountdown(id, sg)
 
-	if platform.sends != 1 {
-		t.Errorf("expected 1 platform send during countdown, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("expected 1 platform send during countdown, got %d", platform.Sends())
 	}
 }
 
@@ -575,11 +617,12 @@ func TestSurface_suppressesDesktopWhenExternalSurfaceActive(t *testing.T) {
 	platform := &stubPlatform{}
 	var callbackCalled bool
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		OnSuggestion: func(_ int64, _ Suggestion) {
 			callbackCalled = true
 		},
@@ -600,8 +643,8 @@ func TestSurface_suppressesDesktopWhenExternalSurfaceActive(t *testing.T) {
 	}
 
 	// Platform.Send should NOT be called.
-	if platform.sends != 0 {
-		t.Errorf("expected 0 platform sends when external surface active, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 platform sends when external surface active, got %d", platform.Sends())
 	}
 
 	// Suggestion should still be persisted.
@@ -624,6 +667,7 @@ func TestSurface_resumesDesktopWhenNoExternalSurface(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return false },
 	}
 
@@ -638,19 +682,20 @@ func TestSurface_resumesDesktopWhenNoExternalSurface(t *testing.T) {
 	// Give the show goroutine a moment to call Platform.Send.
 	time.Sleep(100 * time.Millisecond)
 
-	if platform.sends != 1 {
-		t.Errorf("expected 1 platform send when no external surface, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("expected 1 platform send when no external surface, got %d", platform.Sends())
 	}
 }
 
 func TestSurface_nilHasExternalSurface(t *testing.T) {
 	platform := &stubPlatform{}
 	ntf := &Notifier{
-		level:       LevelAmbient,
-		store:       openTestStore(t),
-		platform:    platform,
-		log:         discardLogger(),
-		lastShownAt: make(map[Level]time.Time),
+		level:             LevelAmbient,
+		store:             openTestStore(t),
+		platform:          platform,
+		log:               discardLogger(),
+		lastShownAt:       make(map[Level]time.Time),
+		recentSuggestions: make(map[string]time.Time),
 		// HasExternalSurface intentionally nil — backwards compat
 	}
 
@@ -665,8 +710,8 @@ func TestSurface_nilHasExternalSurface(t *testing.T) {
 	// Give the show goroutine a moment.
 	time.Sleep(100 * time.Millisecond)
 
-	if platform.sends != 1 {
-		t.Errorf("expected 1 platform send with nil HasExternalSurface, got %d", platform.sends)
+	if platform.Sends() != 1 {
+		t.Errorf("expected 1 platform send with nil HasExternalSurface, got %d", platform.Sends())
 	}
 }
 
@@ -678,6 +723,7 @@ func TestSurface_digestSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
@@ -691,8 +737,8 @@ func TestSurface_digestSuppressedWhenExternalActive(t *testing.T) {
 
 	// Digest queue should be empty since external surface is active.
 	ntf.FlushDigest()
-	if platform.sends != 0 {
-		t.Errorf("expected 0 sends after FlushDigest with external surface, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 sends after FlushDigest with external surface, got %d", platform.Sends())
 	}
 }
 
@@ -704,6 +750,7 @@ func TestSurface_conversationalSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
@@ -718,8 +765,8 @@ func TestSurface_conversationalSuppressedWhenExternalActive(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if platform.sends != 0 {
-		t.Errorf("expected 0 platform sends at conversational with external surface, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 platform sends at conversational with external surface, got %d", platform.Sends())
 	}
 }
 
@@ -731,6 +778,7 @@ func TestSurface_autonomousSuppressedWhenExternalActive(t *testing.T) {
 		platform:           platform,
 		log:                discardLogger(),
 		lastShownAt:        make(map[Level]time.Time),
+		recentSuggestions:  make(map[string]time.Time),
 		HasExternalSurface: func() bool { return true },
 	}
 
@@ -745,16 +793,27 @@ func TestSurface_autonomousSuppressedWhenExternalActive(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if platform.sends != 0 {
-		t.Errorf("expected 0 platform sends at autonomous with external surface, got %d", platform.sends)
+	if platform.Sends() != 0 {
+		t.Errorf("expected 0 platform sends at autonomous with external surface, got %d", platform.Sends())
 	}
 }
 
 // errPlatform is a stub Platform whose Execute always returns an error,
 // used to exercise the failure branch of executeWithCountdown.
 type errPlatform struct {
+	mu    sync.Mutex
 	sends int
 }
 
-func (p *errPlatform) Send(_, _ string, _ bool) { p.sends++ }
-func (p *errPlatform) Execute(_ string) error   { return errors.New("exec failed") }
+func (p *errPlatform) Send(_, _ string, _ bool) {
+	p.mu.Lock()
+	p.sends++
+	p.mu.Unlock()
+}
+func (p *errPlatform) Execute(_ string) error { return errors.New("exec failed") }
+
+func (p *errPlatform) Sends() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sends
+}
