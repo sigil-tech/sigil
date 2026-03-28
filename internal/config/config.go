@@ -177,6 +177,14 @@ type FleetConfig struct {
 	NodeID   string `toml:"node_id"`  // auto-generated if empty
 }
 
+// ApplyDefaults fills in zero-value fields that have well-known defaults.
+// Call after Load to ensure fleet-enabled configs get the production endpoint.
+func (c *Config) ApplyDefaults() {
+	if c.Fleet.Endpoint == "" && c.Fleet.Enabled {
+		c.Fleet.Endpoint = DefaultFleetEndpoint
+	}
+}
+
 // Defaults returns a Config populated with sensible built-in values.
 // This is what the daemon uses when no config file exists.
 func Defaults() *Config {
