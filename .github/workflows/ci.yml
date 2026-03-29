@@ -7,7 +7,53 @@ on:
 
 jobs:
   check:
-    name: Build & Test
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check (fmt, vet, test -race)
+        if: runner.os != 'Windows'
+        run: make check
+
+      - name: Check (Windows — build + vet + test)
+        if: runner.os == 'Windows'
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Build core (sigild + sigilctl)
+        run: make build
+
+      - name: Build plugins
+        shell: bash
+        run: |
+          for p in ./plugins/sigil-plugin-*/; do
+            echo "Building $(basename $p)..."
+            go build "$p"
+          done
+
+      - name: Cross-compile check (Windows target)
+        if: runner.os == 'Linux'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          go build ./cmd/sigild/...
+          go build ./cmd/sigilctl/...
+
+  build-app:
+    name: Build sigil-app (${{ matrix.os }})
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -20,12 +66,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Check (fmt, vet, lint, test -race)
-        run: make check
-
-      - name: Build
-        run: make build
 
       - uses: actions/setup-node@v4
         with:
@@ -43,26 +83,20 @@ jobs:
       - name: Build sigil-app
         run: cd cmd/sigil-app && wails build
 
-      - name: Verify sigil-app binary size
+      - name: Verify binary size < 15MB
+        shell: bash
         run: |
-          # macOS produces .app bundle, Linux produces raw binary
           if [ -f cmd/sigil-app/build/bin/sigil-app ]; then
             BIN=cmd/sigil-app/build/bin/sigil-app
           elif [ -f cmd/sigil-app/build/bin/sigil-app.app/Contents/MacOS/sigil-app ]; then
             BIN=cmd/sigil-app/build/bin/sigil-app.app/Contents/MacOS/sigil-app
           else
             echo "FAIL: sigil-app binary not found"
-            ls -R cmd/sigil-app/build/bin/ 2>/dev/null || true
             exit 1
           fi
           SIZE=$(wc -c < "$BIN" | tr -d ' ')
-          SIZE_MB=$((SIZE / 1024 / 1024))
-          echo "sigil-app binary: ${SIZE_MB}MB"
-          if [ "$SIZE" -gt $((15 * 1024 * 1024)) ]; then
-            echo "FAIL: binary exceeds 15MB limit"
-            exit 1
-          fi
-          echo "PASS: binary under 15MB limit"
+          echo "sigil-app binary: $((SIZE / 1024 / 1024))MB"
+          [ "$SIZE" -le $((15 * 1024 * 1024)) ] || { echo "FAIL: exceeds 15MB"; exit 1; }
 
       - name: Upload sigil-app artifact
         uses: actions/upload-artifact@v4
@@ -70,11 +104,55 @@ jobs:
           name: sigil-app-${{ matrix.os }}
           path: cmd/sigil-app/build/bin/
 
+  build-vscode:
+    name: Build VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build extension
+        run: |
+          cd extensions/vscode
+          npm install
+          npm run compile
+
+      - name: Package .vsix
+        run: |
+          cd extensions/vscode
+          npx @vscode/vsce package --no-dependencies -o sigil-vscode.vsix
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: extensions/vscode/sigil-vscode.vsix
+
+  smoke:
+    name: Smoke Test
+    needs: [check]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: make build
+
       - name: Smoke test — sigild init
         run: |
           ./bin/sigild init --non-interactive
 
-          # Verify shell hook was written from embedded assets
           if [ -f "$HOME/.config/sigil/shell-hook.zsh" ] || [ -f "$HOME/.config/sigil/shell-hook.bash" ]; then
             echo "PASS: shell hook installed"
           else
@@ -82,7 +160,6 @@ jobs:
             exit 1
           fi
 
-          # Verify config was created
           if [ -f "$HOME/.config/sigil/config.toml" ]; then
             echo "PASS: config.toml created"
           else

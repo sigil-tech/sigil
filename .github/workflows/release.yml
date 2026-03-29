@@ -80,11 +80,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            platform: linux/amd64
             artifact: sigil-app-linux-amd64
           - os: macos-latest
-            platform: darwin/universal
             artifact: sigil-app-darwin-universal
+          - os: windows-latest
+            artifact: sigil-app-windows-amd64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -117,7 +117,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd cmd/sigil-app/build/bin
-          # Create a zip of the .app bundle for release
           zip -r sigil-app-darwin-universal.zip sigil-app.app
 
       - name: Package Linux binary
@@ -125,6 +124,13 @@ jobs:
         run: |
           cd cmd/sigil-app/build/bin
           tar czf sigil-app-linux-amd64.tar.gz sigil-app
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd cmd/sigil-app/build/bin
+          7z a sigil-app-windows-amd64.zip sigil-app.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -134,9 +140,32 @@ jobs:
             cmd/sigil-app/build/bin/*.zip
             cmd/sigil-app/build/bin/*.tar.gz
 
+  build-vscode:
+    name: Build VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and package .vsix
+        run: |
+          cd extensions/vscode
+          npm install
+          npm run compile
+          npx @vscode/vsce package --no-dependencies -o sigil-vscode.vsix
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: extensions/vscode/sigil-vscode.vsix
+
   release:
     name: Publish Release
-    needs: [build, build-app]
+    needs: [build, build-app, build-vscode]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -152,4 +181,5 @@ jobs:
             sigilctl-*
             sigil-plugin-*
             sigil-app-*
+            sigil-vscode.vsix
             checksums-*.txt
