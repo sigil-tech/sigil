@@ -8,6 +8,13 @@ declare module "../wailsjs/go/main/App" {
   export function Ask(query: string): Promise<any>;
   export function GetCurrentTask(): Promise<any>;
   export function IsConnected(): Promise<boolean>;
+  export function GetConfig(): Promise<any>;
+  export function SetConfig(config: any): Promise<any>;
+  export function GetPluginStatus(): Promise<any[]>;
+  export function GetPluginRegistry(): Promise<any[]>;
+  export function InstallPlugin(name: string): Promise<void>;
+  export function EnablePlugin(name: string): Promise<void>;
+  export function DisablePlugin(name: string): Promise<void>;
 }
 
 declare module "../wailsjs/runtime/runtime" {

@@ -86,6 +86,7 @@ type daemonConfig struct {
 	notifierLevel int
 	logLevel      string
 	digestTime    string
+	configPath    string         // path to the TOML config file on disk
 	fileCfg       *config.Config // resolved file config (for handlers that need it)
 }
 
@@ -149,6 +150,7 @@ func parseFlags() daemonConfig {
 		notifierLevel: *notifierLevel,
 		logLevel:      *logLevel,
 		digestTime:    *digestTime,
+		configPath:    *cfgPath,
 		fileCfg:       fileCfg,
 	}
 }
@@ -497,6 +499,234 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 			result = append(result, pc)
 		}
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// set-config — update the config file on disk.
+	// Payload: a partial config.Config JSON object.
+	// API-key fields that start with "****" are preserved from the existing file.
+	srv.Handle("set-config", func(ctx context.Context, req socket.Request) socket.Response {
+		// Parse the incoming config.
+		var incoming config.Config
+		if err := json.Unmarshal(req.Payload, &incoming); err != nil {
+			return socket.Response{Error: "invalid config payload: " + err.Error()}
+		}
+
+		// Load the current config from disk so we can detect changes and
+		// preserve masked API keys.
+		current, err := config.Load(cfg.configPath)
+		if err != nil {
+			return socket.Response{Error: "load current config: " + err.Error()}
+		}
+
+		// Preserve masked API keys: if the incoming value starts with "****",
+		// keep the old value.
+		if strings.HasPrefix(incoming.Inference.Cloud.APIKey, "****") {
+			incoming.Inference.Cloud.APIKey = current.Inference.Cloud.APIKey
+		}
+		if strings.HasPrefix(incoming.ML.Cloud.APIKey, "****") {
+			incoming.ML.Cloud.APIKey = current.ML.Cloud.APIKey
+		}
+
+		// Detect restart-requiring field changes before merging.
+		restartRequired := false
+		if len(incoming.Daemon.WatchDirs) > 0 && fmt.Sprint(incoming.Daemon.WatchDirs) != fmt.Sprint(current.Daemon.WatchDirs) {
+			restartRequired = true
+		}
+		if incoming.Inference.Mode != "" && incoming.Inference.Mode != current.Inference.Mode {
+			restartRequired = true
+		}
+		if incoming.Network.Enabled != current.Network.Enabled {
+			restartRequired = true
+		}
+		if incoming.Network.Bind != "" && incoming.Network.Bind != current.Network.Bind {
+			restartRequired = true
+		}
+		if incoming.Network.Port != 0 && incoming.Network.Port != current.Network.Port {
+			restartRequired = true
+		}
+
+		// Merge incoming over current and save.
+		merged := current
+		// Re-use the config package's internal merge by loading the incoming
+		// as an overlay. We serialize incoming → TOML → reload to reuse merge.
+		// For simplicity, just do a direct field merge here.
+		if incoming.Daemon.LogLevel != "" {
+			merged.Daemon.LogLevel = incoming.Daemon.LogLevel
+		}
+		if len(incoming.Daemon.WatchDirs) > 0 {
+			merged.Daemon.WatchDirs = incoming.Daemon.WatchDirs
+		}
+		if len(incoming.Daemon.RepoDirs) > 0 {
+			merged.Daemon.RepoDirs = incoming.Daemon.RepoDirs
+		}
+		if incoming.Daemon.DBPath != "" {
+			merged.Daemon.DBPath = incoming.Daemon.DBPath
+		}
+		if incoming.Daemon.SocketPath != "" {
+			merged.Daemon.SocketPath = incoming.Daemon.SocketPath
+		}
+		if incoming.Notifier.Level != nil {
+			merged.Notifier.Level = incoming.Notifier.Level
+		}
+		if incoming.Notifier.DigestTime != "" {
+			merged.Notifier.DigestTime = incoming.Notifier.DigestTime
+		}
+		if incoming.Inference.Mode != "" {
+			merged.Inference.Mode = incoming.Inference.Mode
+		}
+		if incoming.Inference.Cloud.APIKey != "" {
+			merged.Inference.Cloud.APIKey = incoming.Inference.Cloud.APIKey
+		}
+		if incoming.Inference.Cloud.Provider != "" {
+			merged.Inference.Cloud.Provider = incoming.Inference.Cloud.Provider
+		}
+		if incoming.Inference.Cloud.BaseURL != "" {
+			merged.Inference.Cloud.BaseURL = incoming.Inference.Cloud.BaseURL
+		}
+		if incoming.Inference.Cloud.Model != "" {
+			merged.Inference.Cloud.Model = incoming.Inference.Cloud.Model
+		}
+		if incoming.Retention.RawEventDays != 0 {
+			merged.Retention.RawEventDays = incoming.Retention.RawEventDays
+		}
+		if incoming.Fleet.Endpoint != "" {
+			merged.Fleet.Endpoint = incoming.Fleet.Endpoint
+		}
+		if len(incoming.Plugins) > 0 {
+			if merged.Plugins == nil {
+				merged.Plugins = make(map[string]config.PluginConfig)
+			}
+			for k, v := range incoming.Plugins {
+				merged.Plugins[k] = v
+			}
+		}
+		if incoming.Network.Enabled {
+			merged.Network.Enabled = true
+		}
+		if incoming.Network.Bind != "" {
+			merged.Network.Bind = incoming.Network.Bind
+		}
+		if incoming.Network.Port != 0 {
+			merged.Network.Port = incoming.Network.Port
+		}
+
+		if err := config.Save(cfg.configPath, merged); err != nil {
+			return socket.Response{Error: "save config: " + err.Error()}
+		}
+
+		// Update the in-memory fileCfg reference.
+		cfg.fileCfg = merged
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"saved":            true,
+			"restart_required": restartRequired,
+		})}
+	})
+
+	// plugin-registry — return all available plugins from the built-in registry.
+	srv.Handle("plugin-registry", func(ctx context.Context, _ socket.Request) socket.Response {
+		entries := plugin.Registry()
+		type registryRow struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Version     string `json:"version"`
+			Category    string `json:"category"`
+			Binary      string `json:"binary"`
+			Installed   bool   `json:"installed"`
+		}
+		rows := make([]registryRow, 0, len(entries))
+		for _, e := range entries {
+			rows = append(rows, registryRow{
+				Name:        e.Name,
+				Description: e.Description,
+				Version:     e.Version,
+				Category:    e.Category,
+				Binary:      e.Binary,
+				Installed:   plugin.IsInstalled(e.Name),
+			})
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(rows)}
+	})
+
+	// plugin-install — install a plugin by name.
+	srv.Handle("plugin-install", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Name == "" {
+			return socket.Response{Error: "name is required"}
+		}
+		entry := plugin.Lookup(p.Name)
+		if entry == nil {
+			return socket.Response{Error: fmt.Sprintf("unknown plugin %q", p.Name)}
+		}
+		if err := plugin.Install(p.Name, plugin.DetectInstallMethod()); err != nil {
+			return socket.Response{Error: fmt.Sprintf("install %s: %s", p.Name, err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"installed": true,
+		})}
+	})
+
+	// plugin-enable — enable a plugin by name.
+	srv.Handle("plugin-enable", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Name == "" {
+			return socket.Response{Error: "name is required"}
+		}
+		if err := pluginMgr.Enable(ctx, p.Name); err != nil {
+			return socket.Response{Error: fmt.Sprintf("enable %s: %s", p.Name, err)}
+		}
+		// Update config on disk.
+		if cfg.fileCfg.Plugins == nil {
+			cfg.fileCfg.Plugins = make(map[string]config.PluginConfig)
+		}
+		pc := cfg.fileCfg.Plugins[p.Name]
+		pc.Enabled = true
+		cfg.fileCfg.Plugins[p.Name] = pc
+		if err := config.Save(cfg.configPath, cfg.fileCfg); err != nil {
+			log.Warn("plugin-enable: save config", "err", err)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"enabled": true,
+		})}
+	})
+
+	// plugin-disable — disable a plugin by name.
+	srv.Handle("plugin-disable", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if p.Name == "" {
+			return socket.Response{Error: "name is required"}
+		}
+		if err := pluginMgr.Disable(p.Name); err != nil {
+			return socket.Response{Error: fmt.Sprintf("disable %s: %s", p.Name, err)}
+		}
+		// Update config on disk.
+		if cfg.fileCfg.Plugins == nil {
+			cfg.fileCfg.Plugins = make(map[string]config.PluginConfig)
+		}
+		pc := cfg.fileCfg.Plugins[p.Name]
+		pc.Enabled = false
+		cfg.fileCfg.Plugins[p.Name] = pc
+		if err := config.Save(cfg.configPath, cfg.fileCfg); err != nil {
+			log.Warn("plugin-disable: save config", "err", err)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"enabled": false,
+		})}
 	})
 
 	// Register plugin-aware MCP tools now that the manager exists.

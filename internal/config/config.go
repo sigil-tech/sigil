@@ -349,6 +349,60 @@ func merge(dst, src *Config) {
 	}
 }
 
+// Save atomically writes the config to the given path as TOML.
+func Save(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename config: %w", err)
+	}
+	return nil
+}
+
+// MaskKeys returns a copy of the config with sensitive fields masked.
+func MaskKeys(cfg *Config) *Config {
+	c := *cfg // shallow copy
+	c.Inference.Cloud.APIKey = maskString(c.Inference.Cloud.APIKey)
+	// Copy the plugins map to avoid mutating the original
+	if len(c.Plugins) > 0 {
+		masked := make(map[string]PluginConfig, len(c.Plugins))
+		for k, v := range c.Plugins {
+			env := make(map[string]string, len(v.Env))
+			for ek, ev := range v.Env {
+				if strings.Contains(strings.ToLower(ek), "key") || strings.Contains(strings.ToLower(ek), "token") || strings.Contains(strings.ToLower(ek), "secret") {
+					env[ek] = maskString(ev)
+				} else {
+					env[ek] = ev
+				}
+			}
+			v.Env = env
+			masked[k] = v
+		}
+		c.Plugins = masked
+	}
+	return &c
+}
+
+func maskString(s string) string {
+	if len(s) <= 4 {
+		if s == "" {
+			return ""
+		}
+		return "****"
+	}
+	return "****" + s[len(s)-4:]
+}
+
 func expandDirs(dirs []string) []string {
 	out := make([]string, len(dirs))
 	for i, d := range dirs {

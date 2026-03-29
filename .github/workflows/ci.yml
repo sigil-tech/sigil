@@ -27,6 +27,49 @@ jobs:
       - name: Build
         run: make build
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build sigil-app
+        run: cd cmd/sigil-app && wails build
+
+      - name: Verify sigil-app binary size
+        run: |
+          # macOS produces .app bundle, Linux produces raw binary
+          if [ -f cmd/sigil-app/build/bin/sigil-app ]; then
+            BIN=cmd/sigil-app/build/bin/sigil-app
+          elif [ -f cmd/sigil-app/build/bin/sigil-app.app/Contents/MacOS/sigil-app ]; then
+            BIN=cmd/sigil-app/build/bin/sigil-app.app/Contents/MacOS/sigil-app
+          else
+            echo "FAIL: sigil-app binary not found"
+            ls -R cmd/sigil-app/build/bin/ 2>/dev/null || true
+            exit 1
+          fi
+          SIZE=$(wc -c < "$BIN" | tr -d ' ')
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "sigil-app binary: ${SIZE_MB}MB"
+          if [ "$SIZE" -gt $((15 * 1024 * 1024)) ]; then
+            echo "FAIL: binary exceeds 15MB limit"
+            exit 1
+          fi
+          echo "PASS: binary under 15MB limit"
+
+      - name: Upload sigil-app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sigil-app-${{ matrix.os }}
+          path: cmd/sigil-app/build/bin/
+
       - name: Smoke test — sigild init
         run: |
           ./bin/sigild init --non-interactive

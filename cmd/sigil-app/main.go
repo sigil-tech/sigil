@@ -5,7 +5,6 @@ import (
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
@@ -16,24 +15,25 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "Sigil",
-		Width:            420,
-		Height:           680,
-		MinWidth:         360,
-		MinHeight:        480,
-		Assets:           assets,
-		StartHidden:      true,
+		Title:             "Sigil",
+		Width:             420,
+		Height:            680,
+		MinWidth:          360,
+		MinHeight:         480,
+		Assets:            assets,
+		StartHidden:       false,
 		HideWindowOnClose: true,
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		Bind:             []interface{}{app},
+		OnStartup:         app.startup,
+		OnShutdown:        app.shutdown,
+		Bind:              []interface{}{app},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
-		},
-		Linux: &linux.Options{
-			WindowIsTranslucent: true,
+			About: &mac.AboutInfo{
+				Title:   "Sigil",
+				Message: "Workflow intelligence for software engineers",
+			},
 		},
 	})
 

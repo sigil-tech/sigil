@@ -4,6 +4,8 @@ import { SuggestionList } from "./views/SuggestionList";
 import { SuggestionDetail } from "./views/SuggestionDetail";
 import { DaySummary } from "./views/DaySummary";
 import { AskSigil } from "./views/AskSigil";
+import { Plugins } from "./views/Plugins";
+import { Settings } from "./views/Settings";
 
 // Type stubs — Wails generates the real bindings at build time.
 // These are resolved from ../wailsjs/ by the Wails runtime.
@@ -22,7 +24,7 @@ declare const window: Window & {
   };
 };
 
-type View = "list" | "detail" | "summary" | "ask";
+type View = "list" | "detail" | "summary" | "ask" | "plugins" | "settings";
 type Filter = "all" | "pending" | "accepted" | "dismissed";
 
 export interface Suggestion {
@@ -140,6 +142,8 @@ export function App() {
         )}
         {view === "summary" && <DaySummary />}
         {view === "ask" && <AskSigil />}
+        {view === "plugins" && <Plugins />}
+        {view === "settings" && <Settings />}
       </main>
 
       <nav class="tab-bar">
@@ -160,6 +164,18 @@ export function App() {
           onClick={() => setView("ask")}
         >
           Ask
+        </button>
+        <button
+          class={`tab ${view === "plugins" ? "active" : ""}`}
+          onClick={() => setView("plugins")}
+        >
+          Plugins
+        </button>
+        <button
+          class={`tab ${view === "settings" ? "active" : ""}`}
+          onClick={() => setView("settings")}
+        >
+          &#9881; Settings
         </button>
       </nav>
     </div>

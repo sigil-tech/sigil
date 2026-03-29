@@ -364,6 +364,106 @@ func (a *App) GetCurrentTask() (map[string]any, error) {
 	return result, nil
 }
 
+// GetConfig returns the daemon's current configuration with sensitive fields masked.
+func (a *App) GetConfig() (map[string]any, error) {
+	resp, err := a.call("config", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// SetConfig sends a partial config update to the daemon.
+func (a *App) SetConfig(cfg map[string]any) (map[string]any, error) {
+	resp, err := a.call("set-config", cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetPluginStatus returns installed plugins with their runtime status.
+func (a *App) GetPluginStatus() ([]map[string]any, error) {
+	resp, err := a.call("plugin-status", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetPluginRegistry returns all available plugins from the registry.
+func (a *App) GetPluginRegistry() ([]map[string]any, error) {
+	resp, err := a.call("plugin-registry", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// InstallPlugin installs a plugin by name.
+func (a *App) InstallPlugin(name string) error {
+	resp, err := a.call("plugin-install", map[string]any{"name": name})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
+// EnablePlugin enables a plugin by name.
+func (a *App) EnablePlugin(name string) error {
+	resp, err := a.call("plugin-enable", map[string]any{"name": name})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
+// DisablePlugin disables a plugin by name.
+func (a *App) DisablePlugin(name string) error {
+	resp, err := a.call("plugin-disable", map[string]any{"name": name})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
 // IsConnected returns whether the app has an active subscription connection to
 // the daemon.
 func (a *App) IsConnected() bool {

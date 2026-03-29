@@ -143,6 +143,58 @@ func (m *Manager) Stop() {
 	}
 }
 
+// Enable starts a previously registered but disabled plugin.
+func (m *Manager) Enable(ctx context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.plugins[name]
+	if !ok {
+		return fmt.Errorf("plugin %q not registered", name)
+	}
+	inst.Config.Enabled = true
+	if inst.Config.Daemon {
+		if err := m.startPlugin(ctx, inst); err != nil {
+			return fmt.Errorf("start plugin %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Disable stops a running plugin and marks it disabled.
+func (m *Manager) Disable(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.plugins[name]
+	if !ok {
+		return fmt.Errorf("plugin %q not registered", name)
+	}
+	inst.Config.Enabled = false
+	inst.mu.Lock()
+	if inst.proc != nil {
+		m.log.Info("plugin: disabling", "plugin", name)
+		_ = inst.proc.Signal(syscall.SIGTERM)
+		proc := inst.proc
+		inst.mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			_, _ = proc.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = proc.Signal(syscall.SIGKILL)
+			<-done
+		}
+		inst.mu.Lock()
+		inst.proc = nil
+		inst.mu.Unlock()
+	} else {
+		inst.mu.Unlock()
+	}
+	return nil
+}
+
 // Plugins returns a snapshot of all registered plugins with their status.
 func (m *Manager) Plugins() []PluginStatus {
 	m.mu.RLock()
