@@ -171,7 +171,7 @@ func (m *Manager) Disable(name string) error {
 	inst.mu.Lock()
 	if inst.proc != nil {
 		m.log.Info("plugin: disabling", "plugin", name)
-		_ = inst.proc.Signal(syscall.SIGTERM)
+		signalTerm(inst.proc)
 		proc := inst.proc
 		inst.mu.Unlock()
 		done := make(chan struct{})
@@ -182,7 +182,7 @@ func (m *Manager) Disable(name string) error {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			_ = proc.Signal(syscall.SIGKILL)
+			signalKill(proc)
 			<-done
 		}
 		inst.mu.Lock()
