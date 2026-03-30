@@ -7,6 +7,7 @@ import { AskSigil } from "./views/AskSigil";
 import { Plugins } from "./views/Plugins";
 import { Settings } from "./views/Settings";
 import { Analytics } from "./views/Analytics";
+import { Timeline } from "./views/Timeline";
 import { Wizard } from "./views/Wizard";
 
 // Type stubs — Wails generates the real bindings at build time.
@@ -27,7 +28,7 @@ declare const window: Window & {
   };
 };
 
-type View = "list" | "detail" | "summary" | "ask" | "plugins" | "analytics" | "settings" | "wizard";
+type View = "list" | "detail" | "summary" | "timeline" | "ask" | "plugins" | "analytics" | "settings" | "wizard";
 type Filter = "all" | "pending" | "accepted" | "dismissed";
 
 export interface Suggestion {
@@ -169,7 +170,8 @@ export function App() {
             onUpdate={fetchSuggestions}
           />
         )}
-        {view === "summary" && <DaySummary />}
+        {view === "summary" && <DaySummary onViewTimeline={() => setView("timeline")} />}
+        {view === "timeline" && <Timeline />}
         {view === "ask" && <AskSigil />}
         {view === "plugins" && <Plugins />}
         {view === "analytics" && <Analytics />}

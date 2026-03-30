@@ -333,9 +333,31 @@ func (a *App) GetDaySummary() (map[string]any, error) {
 	return result, nil
 }
 
+// AskContext provides optional context for AI queries.
+type AskContext struct {
+	Task        string   `json:"task,omitempty"`
+	Branch      string   `json:"branch,omitempty"`
+	RecentFiles []string `json:"recent_files,omitempty"`
+}
+
 // Ask sends a free-text query to the daemon's inference engine.
 func (a *App) Ask(query string) (map[string]any, error) {
-	resp, err := a.call("ai-query", map[string]any{"query": query})
+	return a.AskWithContext(query, AskContext{})
+}
+
+// AskWithContext sends a query with optional task/branch/file context.
+func (a *App) AskWithContext(query string, ctx AskContext) (map[string]any, error) {
+	payload := map[string]any{"query": query}
+	if ctx.Task != "" {
+		payload["task"] = ctx.Task
+	}
+	if ctx.Branch != "" {
+		payload["branch"] = ctx.Branch
+	}
+	if len(ctx.RecentFiles) > 0 {
+		payload["recent_files"] = ctx.RecentFiles
+	}
+	resp, err := a.call("ai-query", payload)
 	if err != nil {
 		return nil, err
 	}

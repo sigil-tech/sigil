@@ -12,7 +12,7 @@ declare const window: Window & {
   };
 };
 
-export function DaySummary() {
+export function DaySummary({ onViewTimeline }: { onViewTimeline?: () => void }) {
   const [summary, setSummary] = useState<any>(null);
   const [status, setStatus] = useState<any>(null);
   const [task, setTask] = useState<any>(null);
@@ -173,6 +173,11 @@ export function DaySummary() {
 
       <div class="summary-refresh">
         <button class="btn daemon-btn" onClick={refresh}>Refresh</button>
+        {onViewTimeline && (
+          <button class="btn daemon-btn" onClick={onViewTimeline} style={{ marginLeft: "8px" }}>
+            View Timeline
+          </button>
+        )}
       </div>
     </div>
   );
