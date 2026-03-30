@@ -31,7 +31,7 @@ const NOTIFICATION_LABELS: Record<number, string> = {
 const INFERENCE_MODES = ["local", "localfirst", "remotefirst", "remote"];
 const ML_MODES = ["local", "localfirst", "remotefirst", "remote", "disabled"];
 
-export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
+export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => void; connected?: boolean }) {
   const [config, setConfig] = useState<any>(null);
   const [original, setOriginal] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -68,7 +68,7 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
     }
   };
 
-  useEffect(() => {
+  const fetchConfig = () => {
     setLoading(true);
     window.go.main.App.GetConfig()
       .then((data) => {
@@ -80,7 +80,18 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
         setError("Could not fetch configuration. Is the daemon running?");
       })
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchConfig();
   }, []);
+
+  // Re-fetch config when daemon connection is restored.
+  useEffect(() => {
+    if (connected && error) {
+      fetchConfig();
+    }
+  }, [connected]);
 
   const isDirty = () => JSON.stringify(config) !== JSON.stringify(original);
 
@@ -147,9 +158,68 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
     return (
       <div class="settings-view">
         <div class="empty-state">
-          <div class="empty-state-title">Unavailable</div>
+          <div class="empty-state-title">Daemon Not Running</div>
           <div class="empty-state-text">{error}</div>
         </div>
+        <div class="settings-section">
+          <h3>Daemon</h3>
+          <div class="settings-card">
+            <div class="settings-row daemon-controls">
+              <button
+                class="btn daemon-btn"
+                onClick={() =>
+                  daemonCmd(
+                    "start",
+                    async () => {
+                      await window.go.main.App.StartDaemon();
+                      // Re-fetch config after a short delay to let daemon start.
+                      setTimeout(() => {
+                        setError(null);
+                        setLoading(true);
+                        window.go.main.App.GetConfig()
+                          .then((data) => {
+                            setConfig(structuredClone(data));
+                            setOriginal(structuredClone(data));
+                            setError(null);
+                          })
+                          .catch(() => setError("Daemon started but config not yet available. Try refreshing."))
+                          .finally(() => setLoading(false));
+                      }, 2000);
+                    },
+                    "Daemon starting..."
+                  )
+                }
+                disabled={!!daemonAction}
+              >
+                {daemonAction === "start" ? "Starting..." : "Start Daemon"}
+              </button>
+              <button
+                class="btn daemon-btn"
+                onClick={() => {
+                  setError(null);
+                  setLoading(true);
+                  window.go.main.App.GetConfig()
+                    .then((data) => {
+                      setConfig(structuredClone(data));
+                      setOriginal(structuredClone(data));
+                      setError(null);
+                    })
+                    .catch(() => setError("Could not fetch configuration. Is the daemon running?"))
+                    .finally(() => setLoading(false));
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+        {onRerunSetup && (
+          <div class="settings-save-area">
+            <button class="btn daemon-btn" onClick={onRerunSetup}>
+              Re-run Setup Wizard
+            </button>
+          </div>
+        )}
       </div>
     );
   }

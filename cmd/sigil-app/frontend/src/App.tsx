@@ -201,7 +201,7 @@ export function App() {
         {view === "ask" && <AskSigil />}
         {view === "plugins" && <Plugins />}
         {view === "analytics" && <Analytics />}
-        {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} />}
+        {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} connected={connected} />}
       </main>
 
       <nav class="tab-bar">
