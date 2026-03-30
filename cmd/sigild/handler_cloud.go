@@ -75,17 +75,19 @@ func registerCloudHandlers(srv *socket.Server, cfg daemonConfig) {
 // writeCloudConfig updates the cloud API key in the config file.
 func writeCloudConfig(apiKey string) error {
 	cfgPath := config.DefaultPath()
-	data, err := os.ReadFile(cfgPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return fmt.Errorf("read config: %w", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	content := string(data)
-	// Simple append/replace — a real implementation would use TOML manipulation.
+	cfg.Cloud.APIKey = apiKey
 	if apiKey == "" {
-		content += "\n[cloud]\napi_key = \"\"\ntier = \"free\"\n"
-	} else {
-		content += fmt.Sprintf("\n[cloud]\napi_key = %q\n", apiKey)
+		cfg.Cloud.Tier = "free"
 	}
-	return os.WriteFile(cfgPath, []byte(content), 0o600)
+
+	data, err := config.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(cfgPath, data, 0o600)
 }

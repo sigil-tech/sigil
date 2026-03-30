@@ -50,12 +50,16 @@ func setupTray(app *App) {
 		}
 	})
 	t.OnSetLevel(func(level int) {
-		_ = app.SetLevel(level)
+		if err := app.SetLevel(level); err != nil {
+			app.log.Warn("tray: set level failed", "err", err)
+		}
 	})
 	t.OnPause(func() {
 		// Toggle between ambient (2) and silent (0).
 		if app.IsConnected() {
-			_ = app.SetLevel(0)
+			if err := app.SetLevel(0); err != nil {
+				app.log.Warn("tray: pause failed", "err", err)
+			}
 		}
 	})
 	t.Show()

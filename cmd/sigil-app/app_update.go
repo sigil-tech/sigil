@@ -168,7 +168,9 @@ func (a *App) DownloadUpdate(url, checksum string) error {
 	if checksum != "" {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(got, checksum) {
-			os.RemoveAll(tmpDir)
+			if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+				a.log.Warn("cleanup temp dir after checksum mismatch", "err", rmErr)
+			}
 			return fmt.Errorf("checksum mismatch: expected %s, got %s", checksum, got)
 		}
 	}
@@ -203,8 +205,10 @@ func (a *App) ApplyUpdate() error {
 
 	backup := current + ".backup"
 
-	// Remove stale backup if present.
-	os.Remove(backup)
+	// Remove stale backup if present (best-effort; may not exist).
+	if rmErr := os.Remove(backup); rmErr != nil && !os.IsNotExist(rmErr) {
+		a.log.Warn("remove stale backup", "path", backup, "err", rmErr)
+	}
 
 	// Atomic rename: current -> backup.
 	if err := os.Rename(current, backup); err != nil {
@@ -214,7 +218,9 @@ func (a *App) ApplyUpdate() error {
 	// Move staged -> current.
 	if err := os.Rename(staged, current); err != nil {
 		// Attempt rollback.
-		os.Rename(backup, current)
+		if rbErr := os.Rename(backup, current); rbErr != nil {
+			a.log.Error("rollback failed after install error", "err", rbErr)
+		}
 		return fmt.Errorf("install staged binary: %w", err)
 	}
 
