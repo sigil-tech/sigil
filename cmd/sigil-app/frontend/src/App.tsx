@@ -6,6 +6,7 @@ import { DaySummary } from "./views/DaySummary";
 import { AskSigil } from "./views/AskSigil";
 import { Plugins } from "./views/Plugins";
 import { Settings } from "./views/Settings";
+import { Wizard } from "./views/Wizard";
 
 // Type stubs — Wails generates the real bindings at build time.
 // These are resolved from ../wailsjs/ by the Wails runtime.
@@ -16,6 +17,7 @@ declare const window: Window & {
         GetSuggestions(): Promise<any[]>;
         IsConnected(): Promise<boolean>;
         GetCurrentTask(): Promise<any>;
+        CheckInit(): Promise<{ initialized: boolean; config_path: string }>;
       };
     };
   };
@@ -24,7 +26,7 @@ declare const window: Window & {
   };
 };
 
-type View = "list" | "detail" | "summary" | "ask" | "plugins" | "settings";
+type View = "list" | "detail" | "summary" | "ask" | "plugins" | "settings" | "wizard";
 type Filter = "all" | "pending" | "accepted" | "dismissed";
 
 export interface Suggestion {
@@ -68,6 +70,17 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // Check if daemon is initialized — show wizard if not.
+    window.go.main.App.CheckInit()
+      .then((result) => {
+        if (!result.initialized) {
+          setView("wizard");
+        }
+      })
+      .catch(() => {
+        // If daemon unreachable, still show normal UI (user may start daemon later).
+      });
+
     // Initial data fetch.
     window.go.main.App.IsConnected().then(setConnected).catch(() => {});
     fetchSuggestions();
@@ -119,6 +132,21 @@ export function App() {
           return s.status === filter;
         });
 
+  const handleWizardComplete = () => {
+    setView("list");
+    fetchSuggestions();
+    fetchTask();
+  };
+
+  // Show wizard fullscreen (no status bar or tab bar).
+  if (view === "wizard") {
+    return (
+      <div class="app">
+        <Wizard onComplete={handleWizardComplete} />
+      </div>
+    );
+  }
+
   return (
     <div class="app">
       <StatusBar connected={connected} currentTask={currentTask} />
@@ -143,7 +171,7 @@ export function App() {
         {view === "summary" && <DaySummary />}
         {view === "ask" && <AskSigil />}
         {view === "plugins" && <Plugins />}
-        {view === "settings" && <Settings />}
+        {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} />}
       </main>
 
       <nav class="tab-bar">

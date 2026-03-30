@@ -27,7 +27,7 @@ const NOTIFICATION_LABELS: Record<number, string> = {
 const INFERENCE_MODES = ["local", "localfirst", "remotefirst", "remote"];
 const ML_MODES = ["local", "localfirst", "remotefirst", "remote", "disabled"];
 
-export function Settings() {
+export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
   const [config, setConfig] = useState<any>(null);
   const [original, setOriginal] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -439,6 +439,15 @@ export function Settings() {
         >
           {saving ? "Saving..." : "Save Changes"}
         </button>
+        {onRerunSetup && (
+          <button
+            class="btn daemon-btn"
+            onClick={onRerunSetup}
+            style={{ marginTop: "8px" }}
+          >
+            Re-run Setup Wizard
+          </button>
+        )}
       </div>
     </div>
   );

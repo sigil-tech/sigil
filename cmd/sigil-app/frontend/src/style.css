@@ -1165,3 +1165,227 @@ body {
   color: var(--warning);
   border: 1px solid var(--warning);
 }
+
+/* --- Wizard -------------------------------------------------------------- */
+
+.wizard {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 24px 20px 20px;
+}
+
+.wizard-progress {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding-top: 32px;
+}
+
+.wizard-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.2s ease;
+}
+
+.wizard-dot.active {
+  background: var(--accent);
+  transform: scale(1.25);
+}
+
+.wizard-dot.done {
+  background: var(--success);
+}
+
+.wizard-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.wizard-step h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.wizard-desc {
+  color: var(--fg-secondary);
+  font-size: 13px;
+  margin-bottom: 16px;
+  line-height: 1.6;
+}
+
+.wizard-detected {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.wizard-detected-title {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  margin-bottom: 8px;
+}
+
+.wizard-detected-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wizard-tag {
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
+.wizard-tag-accent {
+  background: rgba(0, 113, 227, 0.1);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.wizard-dirs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.wizard-dir-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-size: 13px;
+  font-family: monospace;
+}
+
+.wizard-dir-remove {
+  background: none;
+  border: none;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.wizard-dir-remove:hover {
+  color: var(--danger);
+}
+
+.wizard-dir-add {
+  display: flex;
+  gap: 8px;
+}
+
+.wizard-dir-add .settings-input {
+  flex: 1;
+}
+
+.wizard-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wizard-radio,
+.wizard-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.wizard-radio:hover,
+.wizard-checkbox:hover {
+  background: var(--card-hover);
+}
+
+.wizard-radio input,
+.wizard-checkbox input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.wizard-radio-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.wizard-radio-desc {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  line-height: 1.4;
+}
+
+.wizard-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-secondary);
+  font-size: 13px;
+}
+
+.wizard-cloud-fields {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wizard-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.wizard-summary-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.wizard-summary-label {
+  color: var(--fg-secondary);
+  font-weight: 500;
+}
+
+.wizard-error {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 59, 48, 0.15);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  font-size: 13px;
+}
+
+.wizard-nav {
+  display: flex;
+  align-items: center;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+.wizard-nav-spacer {
+  flex: 1;
+}
