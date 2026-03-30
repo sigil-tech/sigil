@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { StatusBar } from "./components/StatusBar";
+import { UpdateBanner, UpdateInfoPayload } from "./components/UpdateBanner";
 import { SuggestionList } from "./views/SuggestionList";
 import { SuggestionDetail } from "./views/SuggestionDetail";
 import { DaySummary } from "./views/DaySummary";
@@ -50,6 +51,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [currentTask, setCurrentTask] = useState<any>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfoPayload | null>(null);
 
   const fetchSuggestions = useCallback(async () => {
     try {
@@ -107,9 +109,26 @@ export function App() {
       }
     );
 
+    const offUpdate = window.runtime.EventsOn(
+      "update:available",
+      (info: UpdateInfoPayload) => {
+        // Respect 24h snooze.
+        try {
+          const snoozedUntil = localStorage.getItem("sigil_update_snoozed");
+          if (snoozedUntil && Date.now() < Number(snoozedUntil)) {
+            return;
+          }
+        } catch {
+          // localStorage unavailable.
+        }
+        setUpdateInfo(info);
+      }
+    );
+
     return () => {
       offSuggestion();
       offConnection();
+      offUpdate();
     };
   }, [fetchSuggestions, fetchTask]);
 
@@ -152,6 +171,13 @@ export function App() {
   return (
     <div class="app">
       <StatusBar connected={connected} currentTask={currentTask} />
+
+      {updateInfo && (
+        <UpdateBanner
+          info={updateInfo}
+          onDismiss={() => setUpdateInfo(null)}
+        />
+      )}
 
       <main class="main-content">
         {view === "list" && (

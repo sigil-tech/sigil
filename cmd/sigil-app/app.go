@@ -34,6 +34,9 @@ type App struct {
 
 	notifier Notifier
 	log      *slog.Logger
+
+	// Auto-update state.
+	update updateState
 }
 
 // NewApp returns an App with sensible defaults. Wails will call startup() and
@@ -57,6 +60,7 @@ func (a *App) startup(ctx context.Context) {
 	go a.startSubscription(subCtx)
 
 	go setupTray(a)
+	go a.checkUpdateOnStartup()
 }
 
 // shutdown is called by Wails when the application is shutting down.
@@ -237,6 +241,18 @@ func (a *App) setConnected(c bool) {
 		wailsrt.EventsEmit(a.ctx, "connection:changed", c)
 		updateTrayStatus(c)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Wails runtime helpers (used by tray callbacks)
+// ---------------------------------------------------------------------------
+
+func wailsShow(ctx context.Context) {
+	wailsrt.WindowShow(ctx)
+}
+
+func wailsQuit(ctx context.Context) {
+	wailsrt.Quit(ctx)
 }
 
 // ---------------------------------------------------------------------------

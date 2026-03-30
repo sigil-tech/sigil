@@ -18,6 +18,11 @@ declare module "../wailsjs/go/main/App" {
   export function StopDaemon(): Promise<void>;
   export function StartDaemon(): Promise<void>;
   export function RestartDaemon(): Promise<void>;
+  export function GetVersion(): Promise<string>;
+  export function CheckForUpdate(): Promise<any | null>;
+  export function DownloadUpdate(url: string, checksum: string): Promise<void>;
+  export function ApplyUpdate(): Promise<void>;
+  export function SetUpdateMode(mode: string): Promise<void>;
 }
 
 declare module "../wailsjs/runtime/runtime" {

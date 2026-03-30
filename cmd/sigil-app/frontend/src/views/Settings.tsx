@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Toggle } from "../components/Toggle";
 import { EditableList } from "../components/EditableList";
+import { CloudSettings } from "../components/CloudStatus";
 
 declare const window: Window & {
   go: {
@@ -11,6 +12,9 @@ declare const window: Window & {
         StopDaemon(): Promise<void>;
         StartDaemon(): Promise<void>;
         RestartDaemon(): Promise<void>;
+        GetVersion(): Promise<string>;
+        CheckForUpdate(): Promise<any | null>;
+        SetUpdateMode(mode: string): Promise<void>;
       };
     };
   };
@@ -39,6 +43,30 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
   } | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
   const [daemonAction, setDaemonAction] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  useEffect(() => {
+    window.go.main.App.GetVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    setUpdateCheckMsg(null);
+    try {
+      const info = await window.go.main.App.CheckForUpdate();
+      if (info && info.version) {
+        setUpdateCheckMsg(`Update available: v${info.version}`);
+      } else {
+        setUpdateCheckMsg("You are up to date.");
+      }
+    } catch {
+      setUpdateCheckMsg("Failed to check for updates.");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -515,6 +543,49 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
               }
               placeholder="https://fleet.example.com"
             />
+          </div>
+        </div>
+      </div>
+
+      {/* Updates */}
+      <div class="settings-section">
+        <h3>Updates</h3>
+        <div class="settings-section-desc">
+          Control how Sigil checks for and installs updates.
+        </div>
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Current Version</span>
+            <span class="settings-value-text">{appVersion || "unknown"}</span>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Update Mode</span>
+            <select
+              class="settings-select"
+              value={daemon.update_mode || "notify"}
+              onChange={(e) =>
+                update(
+                  "daemon.update_mode",
+                  (e.target as HTMLSelectElement).value
+                )
+              }
+            >
+              <option value="auto">Auto</option>
+              <option value="notify">Notify</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">
+              {updateCheckMsg || "Check for updates manually"}
+            </span>
+            <button
+              class="btn daemon-btn"
+              onClick={handleCheckUpdate}
+              disabled={checkingUpdate}
+            >
+              {checkingUpdate ? "Checking..." : "Check Now"}
+            </button>
           </div>
         </div>
       </div>

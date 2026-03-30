@@ -121,8 +121,18 @@ func (d DaemonConfig) IsActuationsEnabled() bool {
 
 // NotifierConfig controls how suggestions are surfaced.
 type NotifierConfig struct {
-	Level      *int   `toml:"level"`
-	DigestTime string `toml:"digest_time"` // "HH:MM" in local time
+	Level           *int        `toml:"level"`
+	DigestTime      string      `toml:"digest_time"` // "HH:MM" in local time
+	DND             DNDSchedule `toml:"dnd"`
+	MutedCategories []string    `toml:"muted_categories"`
+}
+
+// DNDSchedule defines a Do Not Disturb window.
+type DNDSchedule struct {
+	Enabled bool     `toml:"enabled"`
+	Start   string   `toml:"start"` // "HH:MM"
+	End     string   `toml:"end"`   // "HH:MM"
+	Days    []string `toml:"days"`  // e.g. ["mon","tue","wed","thu","fri"]
 }
 
 // LevelOrDefault returns the notification level, defaulting to 2 (Ambient).
@@ -253,6 +263,11 @@ func Load(path string) (*Config, error) {
 
 	merge(cfg, &file)
 	return cfg, nil
+}
+
+// Marshal serializes a Config to TOML bytes.
+func Marshal(cfg *Config) ([]byte, error) {
+	return toml.Marshal(cfg)
 }
 
 // expandHome replaces a leading ~ with the user's home directory.

@@ -1,26 +1,69 @@
 package main
 
-import (
-	"log/slog"
-)
-
-// setupTray is a placeholder for system tray functionality.
+// Tray abstracts the platform-native system tray icon and menu.
+// Each platform provides its own implementation via build tags.
 //
-// Wails v2 and getlantern/systray both define an Objective-C AppDelegate on
-// macOS, causing a duplicate symbol linker error. Until Wails v3 (which has
-// integrated systray support) is stable, we skip the external tray library.
-//
-// The app still works as intended: it starts hidden (StartHidden: true in
-// Wails options) and hides on close (HideWindowOnClose: true). Users can
-// reopen it by launching sigil-app again, which will show the existing
-// instance's window via single-instance detection.
-//
-// TODO: Re-add system tray icon when Wails v3 is stable.
-func setupTray(app *App) {
-	slog.Info("system tray: deferred (Wails v2 + systray AppDelegate conflict)")
+// On macOS, Wails v2's Objective-C AppDelegate conflicts with external
+// systray libraries (getlantern/systray, progrium/macdriver). Until Wails v3
+// stabilises its integrated tray support, the macOS implementation logs a
+// deferred message and returns a no-op tray. The interface is defined now so
+// platform implementations can be swapped in without changing the call sites.
+type Tray interface {
+	// Show makes the tray icon visible.
+	Show()
+	// SetConnected updates the icon to reflect daemon connection state.
+	SetConnected(connected bool)
+	// SetLevel updates the tray menu to reflect the current notification level.
+	SetLevel(level int)
+	// OnOpen registers a callback invoked when the user clicks "Open".
+	OnOpen(fn func())
+	// OnQuit registers a callback invoked when the user clicks "Quit".
+	OnQuit(fn func())
+	// OnSetLevel registers a callback for level changes from the tray menu.
+	OnSetLevel(fn func(int))
+	// OnPause registers a callback for pause/resume toggle.
+	OnPause(fn func())
+	// Destroy releases tray resources.
+	Destroy()
 }
 
-// updateTrayStatus is a no-op until the tray icon is implemented.
+// trayInstance holds the current tray (or nil if not available).
+var trayInstance Tray
+
+// setupTray creates and configures the platform tray. Called from startup().
+func setupTray(app *App) {
+	t, err := newTray()
+	if err != nil {
+		app.log.Info("system tray unavailable", "err", err)
+		return
+	}
+	trayInstance = t
+
+	t.OnOpen(func() {
+		if app.ctx != nil {
+			wailsShow(app.ctx)
+		}
+	})
+	t.OnQuit(func() {
+		if app.ctx != nil {
+			wailsQuit(app.ctx)
+		}
+	})
+	t.OnSetLevel(func(level int) {
+		_ = app.SetLevel(level)
+	})
+	t.OnPause(func() {
+		// Toggle between ambient (2) and silent (0).
+		if app.IsConnected() {
+			_ = app.SetLevel(0)
+		}
+	})
+	t.Show()
+}
+
+// updateTrayStatus updates the tray icon for connection state changes.
 func updateTrayStatus(connected bool) {
-	// Will update tray icon when systray integration is available.
+	if trayInstance != nil {
+		trayInstance.SetConnected(connected)
+	}
 }
