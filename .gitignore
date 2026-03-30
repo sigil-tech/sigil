@@ -24,3 +24,5 @@ extensions/vscode/out/
 # Test helper binaries (built at test time by TestMain)
 internal/inference/testdata/fake_llama_server
 internal/inference/testdata/sigterm_ignore
+.claude/worktrees/
+.claude/settings.local.json
