@@ -9,6 +9,7 @@ result-*
 /bin/
 /sigilctl
 /sigild
+/sigil-app
 /sigil-plugin-*
 cover.out
 coverage.out
