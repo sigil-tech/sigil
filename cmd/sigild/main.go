@@ -393,6 +393,15 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		return srv.SubscriberCount("suggestions") > 0
 	}
 
+	// If sigil-app (tray app) is installed, suppress osascript/notify-send
+	// entirely — the tray app handles notifications natively with proper
+	// icon ownership and click routing. Suggestions are still stored and
+	// pushed via socket subscription.
+	if _, err := exec.LookPath("sigil-app"); err == nil {
+		ntf.SuppressPlatformNotifications = true
+		log.Info("sigil-app detected in PATH; platform notifications suppressed")
+	}
+
 	// --- Actuator registry --------------------------------------------------
 	actuatorNotify := func(a actuator.Action) {
 		payload := socket.MarshalPayload(map[string]any{

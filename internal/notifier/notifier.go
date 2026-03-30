@@ -96,9 +96,16 @@ type Notifier struct {
 	OnSuggestion func(id int64, sg Suggestion)
 
 	// HasExternalSurface, if set, reports whether an external notification
-	// surface (e.g. IDE extension) is actively connected. When true, desktop
-	// notifications via Platform.Send are suppressed to avoid duplicates.
+	// surface (e.g. IDE extension or tray app) is actively connected. When
+	// true, desktop notifications via Platform.Send (osascript/notify-send)
+	// are suppressed to avoid duplicates.
 	HasExternalSurface func() bool
+
+	// SuppressPlatformNotifications, if true, unconditionally suppresses
+	// osascript/notify-send notifications. Set this when the tray app is
+	// installed — it handles notifications natively even if temporarily
+	// disconnected. Suggestions are still stored and pushed via socket.
+	SuppressPlatformNotifications bool
 }
 
 // New creates a Notifier at the given level.
@@ -177,10 +184,11 @@ func (n *Notifier) Surface(sg Suggestion) {
 	level := n.level
 	n.mu.RUnlock()
 
-	// When an external surface (e.g. IDE extension) is connected, skip
-	// desktop notifications — the suggestion was already pushed via
-	// OnSuggestion above.
-	externalActive := n.HasExternalSurface != nil && n.HasExternalSurface()
+	// When an external surface (IDE extension, tray app) is connected, or
+	// platform notifications are explicitly suppressed, skip osascript/
+	// notify-send — the suggestion was already pushed via OnSuggestion.
+	externalActive := n.SuppressPlatformNotifications ||
+		(n.HasExternalSurface != nil && n.HasExternalSurface())
 
 	switch level {
 	case LevelSilent:
