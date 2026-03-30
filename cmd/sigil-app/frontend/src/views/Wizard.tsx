@@ -488,21 +488,23 @@ export function Wizard({ onComplete }: { onComplete: () => void }) {
 
       <div class="wizard-nav">
         {step > 0 && (
-          <button class="btn" onClick={() => setStep(step - 1)}>
+          <button type="button" class="btn" onClick={() => setStep((s) => s - 1)}>
             Back
           </button>
         )}
         <div class="wizard-nav-spacer" />
         {step < STEPS.length - 1 ? (
           <button
+            type="button"
             class="btn btn-primary"
-            onClick={() => setStep(step + 1)}
+            onClick={() => setStep((s) => Math.min(s + 1, STEPS.length - 1))}
             disabled={!canNext()}
           >
             Next
           </button>
         ) : (
           <button
+            type="button"
             class="btn btn-primary"
             onClick={handleSubmit}
             disabled={submitting}

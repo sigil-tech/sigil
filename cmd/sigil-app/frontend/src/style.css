@@ -1416,9 +1416,12 @@ body {
 .wizard-nav {
   display: flex;
   align-items: center;
-  padding-top: 16px;
+  padding: 16px 0 4px;
   border-top: 1px solid var(--border);
   margin-top: 16px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 
 .wizard-nav-spacer {
