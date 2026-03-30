@@ -21,7 +21,9 @@ func registerTimelineHandlers(srv *socket.Server, db *store.Store) {
 			Limit  int      `json:"limit"`
 		}
 		if req.Payload != nil {
-			_ = json.Unmarshal(req.Payload, &p)
+			if err := json.Unmarshal(req.Payload, &p); err != nil {
+				return socket.Response{Error: fmt.Sprintf("invalid payload: %v", err)}
+			}
 		}
 		if p.Date == "" {
 			p.Date = time.Now().Format("2006-01-02")

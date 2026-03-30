@@ -33,7 +33,10 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [banner, setBanner] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [banner, setBanner] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
   const [daemonAction, setDaemonAction] = useState<string | null>(null);
 
@@ -51,9 +54,7 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const isDirty = () => {
-    return JSON.stringify(config) !== JSON.stringify(original);
-  };
+  const isDirty = () => JSON.stringify(config) !== JSON.stringify(original);
 
   const update = (path: string, value: any) => {
     setConfig((prev: any) => {
@@ -81,12 +82,27 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
       if (result && result.restart_required) {
         setRestartRequired(true);
       }
-      setBanner({ type: "success", message: "Settings saved successfully." });
+      setBanner({ type: "success", message: "Settings saved." });
     } catch {
       setBanner({ type: "error", message: "Failed to save settings." });
     } finally {
       setSaving(false);
     }
+  };
+
+  const daemonCmd = async (
+    action: string,
+    fn: () => Promise<void>,
+    msg: string
+  ) => {
+    setDaemonAction(action);
+    try {
+      await fn();
+      setBanner({ type: "success", message: msg });
+    } catch {
+      setBanner({ type: "error", message: `Failed to ${action} daemon.` });
+    }
+    setDaemonAction(null);
   };
 
   if (loading) {
@@ -133,304 +149,377 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
       {/* Daemon Control */}
       <div class="settings-section">
         <h3>Daemon</h3>
-        <div class="settings-row daemon-controls">
-          <button
-            class="btn daemon-btn"
-            onClick={async () => {
-              setDaemonAction("starting");
-              try {
-                await window.go.main.App.StartDaemon();
-                setBanner({ type: "success", message: "Daemon started." });
-              } catch {
-                setBanner({ type: "error", message: "Failed to start daemon." });
+        <div class="settings-card">
+          <div class="settings-row daemon-controls">
+            <button
+              class="btn daemon-btn"
+              onClick={() =>
+                daemonCmd(
+                  "start",
+                  () => window.go.main.App.StartDaemon(),
+                  "Daemon started."
+                )
               }
-              setDaemonAction(null);
-            }}
-            disabled={!!daemonAction}
-          >
-            {daemonAction === "starting" ? "Starting..." : "Start"}
-          </button>
-          <button
-            class="btn daemon-btn daemon-btn-warn"
-            onClick={async () => {
-              setDaemonAction("stopping");
-              try {
-                await window.go.main.App.StopDaemon();
-                setBanner({ type: "success", message: "Daemon stopped." });
-              } catch {
-                setBanner({ type: "error", message: "Failed to stop daemon." });
+              disabled={!!daemonAction}
+            >
+              {daemonAction === "start" ? "Starting..." : "Start"}
+            </button>
+            <button
+              class="btn daemon-btn daemon-btn-warn"
+              onClick={() =>
+                daemonCmd(
+                  "stop",
+                  () => window.go.main.App.StopDaemon(),
+                  "Daemon stopped."
+                )
               }
-              setDaemonAction(null);
-            }}
-            disabled={!!daemonAction}
-          >
-            {daemonAction === "stopping" ? "Stopping..." : "Stop"}
-          </button>
-          <button
-            class="btn daemon-btn"
-            onClick={async () => {
-              setDaemonAction("restarting");
-              try {
-                await window.go.main.App.RestartDaemon();
-                setBanner({ type: "success", message: "Daemon restarted." });
-              } catch {
-                setBanner({ type: "error", message: "Failed to restart daemon." });
+              disabled={!!daemonAction}
+            >
+              {daemonAction === "stop" ? "Stopping..." : "Stop"}
+            </button>
+            <button
+              class="btn daemon-btn"
+              onClick={() =>
+                daemonCmd(
+                  "restart",
+                  () => window.go.main.App.RestartDaemon(),
+                  "Daemon restarted."
+                )
               }
-              setDaemonAction(null);
-            }}
-            disabled={!!daemonAction}
-          >
-            {daemonAction === "restarting" ? "Restarting..." : "Restart"}
-          </button>
+              disabled={!!daemonAction}
+            >
+              {daemonAction === "restart" ? "Restarting..." : "Restart"}
+            </button>
+          </div>
         </div>
       </div>
 
       {/* General */}
       <div class="settings-section">
         <h3>General</h3>
-        <div class="settings-row">
-          <label class="settings-label">Log Level</label>
-          <select
-            class="settings-select"
-            value={daemon.log_level || "info"}
-            onChange={(e) =>
-              update("daemon.log_level", (e.target as HTMLSelectElement).value)
-            }
-          >
-            {LOG_LEVELS.map((l) => (
-              <option key={l} value={l}>{l}</option>
-            ))}
-          </select>
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Watch Directories</label>
-          <EditableList
-            items={daemon.watch_dirs || []}
-            onChange={(dirs) => update("daemon.watch_dirs", dirs)}
-            placeholder="Add directory path..."
-          />
-        </div>
-        <div class="settings-row">
-          <Toggle
-            label="Actuations Enabled"
-            checked={daemon.actuations_enabled ?? false}
-            onChange={(v) => update("daemon.actuations_enabled", v)}
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Log Level</span>
+            <select
+              class="settings-select"
+              value={daemon.log_level || "info"}
+              onChange={(e) =>
+                update(
+                  "daemon.log_level",
+                  (e.target as HTMLSelectElement).value
+                )
+              }
+            >
+              {LOG_LEVELS.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label-group">
+              <span class="settings-label">Watch Directories</span>
+              <div class="settings-label-sub">
+                Sigil observes these paths for file edits and git activity
+              </div>
+            </div>
+          </div>
+          <div class="settings-row" style={{ paddingTop: 0 }}>
+            <EditableList
+              items={daemon.watch_dirs || []}
+              onChange={(dirs) => update("daemon.watch_dirs", dirs)}
+              placeholder="Add directory path..."
+            />
+          </div>
+          <div class="settings-row">
+            <Toggle
+              label="Actuations Enabled"
+              checked={daemon.actuations_enabled ?? false}
+              onChange={(v) => update("daemon.actuations_enabled", v)}
+            />
+          </div>
         </div>
       </div>
 
       {/* Notifications */}
       <div class="settings-section">
         <h3>Notifications</h3>
-        <div class="settings-row">
-          <label class="settings-label">Level</label>
-          <select
-            class="settings-select"
-            value={notifier.level ?? 2}
-            onChange={(e) =>
-              update("notifier.level", parseInt((e.target as HTMLSelectElement).value, 10))
-            }
-          >
-            {[0, 1, 2, 3, 4].map((n) => (
-              <option key={n} value={n}>{NOTIFICATION_LABELS[n]}</option>
-            ))}
-          </select>
+        <div class="settings-section-desc">
+          Controls how aggressively Sigil surfaces suggestions.
         </div>
-        <div class="settings-row">
-          <label class="settings-label">Digest Time</label>
-          <input
-            class="settings-input"
-            type="text"
-            value={notifier.digest_time || ""}
-            onInput={(e) =>
-              update("notifier.digest_time", (e.target as HTMLInputElement).value)
-            }
-            placeholder="e.g. 09:00"
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Level</span>
+            <select
+              class="settings-select"
+              value={notifier.level ?? 2}
+              onChange={(e) =>
+                update(
+                  "notifier.level",
+                  parseInt((e.target as HTMLSelectElement).value, 10)
+                )
+              }
+            >
+              {[0, 1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>
+                  {NOTIFICATION_LABELS[n]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Digest Time</span>
+            <input
+              class="settings-input"
+              type="text"
+              value={notifier.digest_time || ""}
+              onInput={(e) =>
+                update(
+                  "notifier.digest_time",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="09:00"
+            />
+          </div>
         </div>
       </div>
 
       {/* LLM Inference */}
       <div class="settings-section">
         <h3>LLM Inference</h3>
-        <div class="settings-row">
-          <label class="settings-label">Mode</label>
-          <select
-            class="settings-select"
-            value={inference.mode || "localfirst"}
-            onChange={(e) =>
-              update("inference.mode", (e.target as HTMLSelectElement).value)
-            }
-          >
-            {INFERENCE_MODES.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
+        <div class="settings-section-desc">
+          Route queries to local or cloud AI models.
         </div>
-        <div class="settings-row">
-          <Toggle
-            label="Local Enabled"
-            checked={inference.local?.enabled ?? false}
-            onChange={(v) => update("inference.local.enabled", v)}
-          />
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Local Server URL</label>
-          <input
-            class="settings-input"
-            type="text"
-            value={inference.local?.server_url || ""}
-            onInput={(e) =>
-              update("inference.local.server_url", (e.target as HTMLInputElement).value)
-            }
-            placeholder="http://127.0.0.1:11434"
-          />
-        </div>
-        <div class="settings-row">
-          <Toggle
-            label="Cloud Enabled"
-            checked={inference.cloud?.enabled ?? false}
-            onChange={(v) => update("inference.cloud.enabled", v)}
-          />
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Cloud Provider</label>
-          <select
-            class="settings-select"
-            value={inference.cloud?.provider || ""}
-            onChange={(e) =>
-              update("inference.cloud.provider", (e.target as HTMLSelectElement).value)
-            }
-          >
-            <option value="">Select...</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Cloud API Key</label>
-          <input
-            class="settings-input"
-            type="password"
-            value={inference.cloud?.api_key || ""}
-            onInput={(e) =>
-              update("inference.cloud.api_key", (e.target as HTMLInputElement).value)
-            }
-            placeholder="Enter API key..."
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Mode</span>
+            <select
+              class="settings-select"
+              value={inference.mode || "localfirst"}
+              onChange={(e) =>
+                update(
+                  "inference.mode",
+                  (e.target as HTMLSelectElement).value
+                )
+              }
+            >
+              {INFERENCE_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div class="settings-row">
+            <Toggle
+              label="Local Enabled"
+              checked={inference.local?.enabled ?? false}
+              onChange={(v) => update("inference.local.enabled", v)}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Local Server URL</span>
+            <input
+              class="settings-input"
+              type="text"
+              value={inference.local?.server_url || ""}
+              onInput={(e) =>
+                update(
+                  "inference.local.server_url",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="http://127.0.0.1:11434"
+            />
+          </div>
+          <div class="settings-row">
+            <Toggle
+              label="Cloud Enabled"
+              checked={inference.cloud?.enabled ?? false}
+              onChange={(v) => update("inference.cloud.enabled", v)}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Cloud Provider</span>
+            <select
+              class="settings-select"
+              value={inference.cloud?.provider || ""}
+              onChange={(e) =>
+                update(
+                  "inference.cloud.provider",
+                  (e.target as HTMLSelectElement).value
+                )
+              }
+            >
+              <option value="">Select...</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Cloud API Key</span>
+            <input
+              class="settings-input"
+              type="password"
+              value={inference.cloud?.api_key || ""}
+              onInput={(e) =>
+                update(
+                  "inference.cloud.api_key",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="Enter API key..."
+            />
+          </div>
         </div>
       </div>
 
       {/* ML Pipeline */}
       <div class="settings-section">
         <h3>ML Pipeline</h3>
-        <div class="settings-row">
-          <label class="settings-label">Mode</label>
-          <select
-            class="settings-select"
-            value={ml.mode || "local"}
-            onChange={(e) =>
-              update("ml.mode", (e.target as HTMLSelectElement).value)
-            }
-          >
-            {ML_MODES.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
+        <div class="settings-section-desc">
+          Local or cloud ML for stuck detection and suggestion timing.
         </div>
-        <div class="settings-row">
-          <Toggle
-            label="Local Enabled"
-            checked={ml.local?.enabled ?? false}
-            onChange={(v) => update("ml.local.enabled", v)}
-          />
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Local Server URL</label>
-          <input
-            class="settings-input"
-            type="text"
-            value={ml.local?.server_url || ""}
-            onInput={(e) =>
-              update("ml.local.server_url", (e.target as HTMLInputElement).value)
-            }
-            placeholder="http://127.0.0.1:7774"
-          />
-        </div>
-        <div class="settings-row">
-          <Toggle
-            label="Cloud Enabled"
-            checked={ml.cloud?.enabled ?? false}
-            onChange={(v) => update("ml.cloud.enabled", v)}
-          />
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">Cloud API Key</label>
-          <input
-            class="settings-input"
-            type="password"
-            value={ml.cloud?.api_key || ""}
-            onInput={(e) =>
-              update("ml.cloud.api_key", (e.target as HTMLInputElement).value)
-            }
-            placeholder="Enter API key..."
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Mode</span>
+            <select
+              class="settings-select"
+              value={ml.mode || "local"}
+              onChange={(e) =>
+                update("ml.mode", (e.target as HTMLSelectElement).value)
+              }
+            >
+              {ML_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div class="settings-row">
+            <Toggle
+              label="Local Enabled"
+              checked={ml.local?.enabled ?? false}
+              onChange={(v) => update("ml.local.enabled", v)}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Local Server URL</span>
+            <input
+              class="settings-input"
+              type="text"
+              value={ml.local?.server_url || ""}
+              onInput={(e) =>
+                update(
+                  "ml.local.server_url",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="http://127.0.0.1:7774"
+            />
+          </div>
+          <div class="settings-row">
+            <Toggle
+              label="Cloud Enabled"
+              checked={ml.cloud?.enabled ?? false}
+              onChange={(v) => update("ml.cloud.enabled", v)}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Cloud API Key</span>
+            <input
+              class="settings-input"
+              type="password"
+              value={ml.cloud?.api_key || ""}
+              onInput={(e) =>
+                update(
+                  "ml.cloud.api_key",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="Enter API key..."
+            />
+          </div>
         </div>
       </div>
 
       {/* Data */}
       <div class="settings-section">
         <h3>Data</h3>
-        <div class="settings-row">
-          <label class="settings-label">Raw Event Days</label>
-          <input
-            class="settings-input"
-            type="number"
-            value={retention.raw_event_days ?? 30}
-            onInput={(e) =>
-              update("retention.raw_event_days", parseInt((e.target as HTMLInputElement).value, 10))
-            }
-            min={1}
-          />
+        <div class="settings-section-desc">
+          How long raw events are retained and how often analysis runs.
         </div>
-        <div class="settings-row">
-          <label class="settings-label">Analyze Every</label>
-          <input
-            class="settings-input"
-            type="text"
-            value={daemon.analyze_every || ""}
-            onInput={(e) =>
-              update("daemon.analyze_every", (e.target as HTMLInputElement).value)
-            }
-            placeholder="e.g. 1h"
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <span class="settings-label">Raw Event Days</span>
+            <input
+              class="settings-input"
+              type="number"
+              value={retention.raw_event_days ?? 30}
+              onInput={(e) =>
+                update(
+                  "retention.raw_event_days",
+                  parseInt((e.target as HTMLInputElement).value, 10)
+                )
+              }
+              min={1}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Analyze Every</span>
+            <input
+              class="settings-input"
+              type="text"
+              value={daemon.analyze_every || ""}
+              onInput={(e) =>
+                update(
+                  "daemon.analyze_every",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="1h"
+            />
+          </div>
         </div>
       </div>
 
       {/* Fleet */}
       <div class="settings-section">
-        <h3>Fleet</h3>
-        <div class="settings-row">
-          <Toggle
-            label="Enabled"
-            checked={fleet.enabled ?? false}
-            onChange={(v) => update("fleet.enabled", v)}
-          />
+        <h3>Team Insights</h3>
+        <div class="settings-section-desc">
+          Anonymized aggregate metrics shared with your team. No raw data leaves
+          your machine.
         </div>
-        <div class="settings-row">
-          <label class="settings-label">Endpoint</label>
-          <input
-            class="settings-input"
-            type="text"
-            value={fleet.endpoint || ""}
-            onInput={(e) =>
-              update("fleet.endpoint", (e.target as HTMLInputElement).value)
-            }
-            placeholder="https://fleet.example.com"
-          />
+        <div class="settings-card">
+          <div class="settings-row">
+            <Toggle
+              label="Enabled"
+              checked={fleet.enabled ?? false}
+              onChange={(v) => update("fleet.enabled", v)}
+            />
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Endpoint</span>
+            <input
+              class="settings-input"
+              type="text"
+              value={fleet.endpoint || ""}
+              onInput={(e) =>
+                update(
+                  "fleet.endpoint",
+                  (e.target as HTMLInputElement).value
+                )
+              }
+              placeholder="https://fleet.example.com"
+            />
+          </div>
         </div>
       </div>
 
+      {/* Save + Setup */}
       <div class="settings-save-area">
         <button
           class="btn save-btn"
@@ -440,11 +529,7 @@ export function Settings({ onRerunSetup }: { onRerunSetup?: () => void }) {
           {saving ? "Saving..." : "Save Changes"}
         </button>
         {onRerunSetup && (
-          <button
-            class="btn daemon-btn"
-            onClick={onRerunSetup}
-            style={{ marginTop: "8px" }}
-          >
+          <button class="btn daemon-btn" onClick={onRerunSetup}>
             Re-run Setup Wizard
           </button>
         )}

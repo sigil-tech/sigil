@@ -19,7 +19,9 @@ func registerAnalyticsHandlers(srv *socket.Server, db *store.Store) {
 			Days int `json:"days"`
 		}
 		if req.Payload != nil {
-			_ = json.Unmarshal(req.Payload, &p)
+			if err := json.Unmarshal(req.Payload, &p); err != nil {
+				return socket.Response{Error: fmt.Sprintf("invalid payload: %v", err)}
+			}
 		}
 		if p.Days <= 0 {
 			p.Days = 30
@@ -44,7 +46,9 @@ func registerAnalyticsHandlers(srv *socket.Server, db *store.Store) {
 			To     string `json:"to"`
 		}
 		if req.Payload != nil {
-			_ = json.Unmarshal(req.Payload, &p)
+			if err := json.Unmarshal(req.Payload, &p); err != nil {
+				return socket.Response{Error: fmt.Sprintf("invalid payload: %v", err)}
+			}
 		}
 		if p.Format == "" {
 			p.Format = "json"
@@ -82,7 +86,7 @@ type analyticsResult struct {
 	DailyCounts        []dailyCount        `json:"daily_counts"`
 	CategoryBreakdown  []categoryBreakdown `json:"category_breakdown"`
 	HourlyDistribution [24]int             `json:"hourly_distribution"`
-	StreakDays          int                 `json:"streak_days"`
+	StreakDays         int                 `json:"streak_days"`
 }
 
 type dailyCount struct {

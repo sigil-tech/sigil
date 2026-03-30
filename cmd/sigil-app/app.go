@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wambozi/sigil/internal/socket"
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wambozi/sigil/internal/socket"
 )
 
 // App is the Wails-bound backend. It communicates with sigild over the Unix
