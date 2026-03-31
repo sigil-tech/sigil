@@ -1450,21 +1450,34 @@ func registerHandlers(
 	})
 
 	// config — return the resolved runtime configuration as JSON.
-	// Sensitive fields (API keys / tokens) are masked with "***".
+	// Sensitive fields (API keys / tokens) are masked.
 	srv.Handle("config", func(ctx context.Context, _ socket.Request) socket.Response {
-		payload := map[string]any{
-			"db_path":        cfg.dbPath,
-			"socket_path":    cfg.socketPath,
-			"inference_mode": cfg.inferenceMode,
-			"watch_paths":    cfg.watchPaths,
-			"repo_paths":     cfg.repoPaths,
-			"analyze_every":  cfg.analyzeEvery.String(),
-			"notifier_level": cfg.notifierLevel,
-			"log_level":      cfg.logLevel,
-			"digest_time":    cfg.digestTime,
-			"raw_event_days": cfg.fileCfg.Retention.RawEventDays,
+		// Deep-copy the file config so masking doesn't affect in-memory state.
+		snapshot := *cfg.fileCfg
+
+		// Apply runtime overrides that came from flags.
+		if snapshot.Daemon.LogLevel == "" {
+			snapshot.Daemon.LogLevel = cfg.logLevel
 		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(payload)}
+		if len(snapshot.Daemon.WatchDirs) == 0 {
+			snapshot.Daemon.WatchDirs = cfg.watchPaths
+		}
+		if len(snapshot.Daemon.RepoDirs) == 0 {
+			snapshot.Daemon.RepoDirs = cfg.repoPaths
+		}
+
+		// Mask sensitive fields.
+		if snapshot.Inference.Cloud.APIKey != "" {
+			snapshot.Inference.Cloud.APIKey = "****"
+		}
+		if snapshot.ML.Cloud.APIKey != "" {
+			snapshot.ML.Cloud.APIKey = "****"
+		}
+		if snapshot.Cloud.APIKey != "" {
+			snapshot.Cloud.APIKey = "****"
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(snapshot)}
 	})
 
 	// ai-query — routes a natural-language query through the inference engine
