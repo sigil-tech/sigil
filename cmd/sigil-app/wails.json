@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "sigil-app",
+  "outputfilename": "sigil-app",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Sigil",
+    "email": "dev@sigil.dev"
+  },
+  "info": {
+    "companyName": "Sigil",
+    "productName": "Sigil",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright 2026 Sigil",
+    "comments": "Sigil — workflow intelligence"
+  }
+}
