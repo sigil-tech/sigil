@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -125,7 +124,7 @@ func (m *Manager) Stop() {
 		inst.mu.Lock()
 		if inst.proc != nil {
 			m.log.Info("plugin: stopping", "plugin", name)
-			_ = inst.proc.Signal(syscall.SIGTERM)
+			_ = signalTerm(inst.proc)
 			done := make(chan struct{})
 			go func() {
 				_, _ = inst.proc.Wait()
@@ -134,13 +133,65 @@ func (m *Manager) Stop() {
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):
-				_ = inst.proc.Signal(syscall.SIGKILL)
+				_ = signalKill(inst.proc)
 				<-done
 			}
 			inst.proc = nil
 		}
 		inst.mu.Unlock()
 	}
+}
+
+// Enable starts a previously registered but disabled plugin.
+func (m *Manager) Enable(ctx context.Context, name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.plugins[name]
+	if !ok {
+		return fmt.Errorf("plugin %q not registered", name)
+	}
+	inst.Config.Enabled = true
+	if inst.Config.Daemon {
+		if err := m.startPlugin(ctx, inst); err != nil {
+			return fmt.Errorf("start plugin %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Disable stops a running plugin and marks it disabled.
+func (m *Manager) Disable(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.plugins[name]
+	if !ok {
+		return fmt.Errorf("plugin %q not registered", name)
+	}
+	inst.Config.Enabled = false
+	inst.mu.Lock()
+	if inst.proc != nil {
+		m.log.Info("plugin: disabling", "plugin", name)
+		signalTerm(inst.proc)
+		proc := inst.proc
+		inst.mu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			_, _ = proc.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			signalKill(proc)
+			<-done
+		}
+		inst.mu.Lock()
+		inst.proc = nil
+		inst.mu.Unlock()
+	} else {
+		inst.mu.Unlock()
+	}
+	return nil
 }
 
 // Plugins returns a snapshot of all registered plugins with their status.
@@ -156,6 +207,7 @@ func (m *Manager) Plugins() []PluginStatus {
 			Enabled: inst.Config.Enabled,
 			Running: inst.proc != nil,
 			Healthy: inst.healthy,
+			Daemon:  inst.Config.Daemon,
 		}
 		if inst.proc != nil {
 			status.PID = inst.proc.Pid
@@ -172,6 +224,7 @@ type PluginStatus struct {
 	Enabled bool   `json:"enabled"`
 	Running bool   `json:"running"`
 	Healthy bool   `json:"healthy"`
+	Daemon  bool   `json:"daemon"`
 	PID     int    `json:"pid,omitempty"`
 }
 
@@ -192,7 +245,7 @@ func (m *Manager) startPlugin(ctx context.Context, inst *Instance) error {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stdout = os.Stderr // route plugin output to daemon stderr
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcGroup(cmd)
 
 	// Pass plugin-specific env vars.
 	cmd.Env = os.Environ()

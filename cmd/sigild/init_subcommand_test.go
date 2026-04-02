@@ -54,9 +54,9 @@ func TestInstallShellHook(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("SHELL", tt.shell)
 
-			err := installShellHook(home)
+			err := installShellHooks(home, nil, shellRegistry)
 			if err != nil {
-				t.Fatalf("installShellHook returned error: %v", err)
+				t.Fatalf("installShellHooks returned error: %v", err)
 			}
 
 			if tt.wantSkip {
@@ -110,10 +110,10 @@ func TestInstallShellHook_Idempotency(t *testing.T) {
 			t.Setenv("SHELL", tt.shell)
 
 			// Run twice.
-			if err := installShellHook(home); err != nil {
+			if err := installShellHooks(home, nil, shellRegistry); err != nil {
 				t.Fatalf("first install failed: %v", err)
 			}
-			if err := installShellHook(home); err != nil {
+			if err := installShellHooks(home, nil, shellRegistry); err != nil {
 				t.Fatalf("second install failed: %v", err)
 			}
 

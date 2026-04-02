@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -38,49 +39,49 @@ type Config struct {
 
 // PluginConfig defines a single plugin's configuration.
 type PluginConfig struct {
-	Enabled      bool              `toml:"enabled"`
-	Binary       string            `toml:"binary"`
-	Daemon       bool              `toml:"daemon"` // true = run as long-lived process
-	PollInterval string            `toml:"poll_interval"`
-	HealthURL    string            `toml:"health_url"`
-	Env          map[string]string `toml:"env"`
+	Enabled      bool              `toml:"enabled" json:"enabled"`
+	Binary       string            `toml:"binary" json:"binary"`
+	Daemon       bool              `toml:"daemon" json:"daemon"`
+	PollInterval string            `toml:"poll_interval" json:"poll_interval"`
+	HealthURL    string            `toml:"health_url" json:"health_url"`
+	Env          map[string]string `toml:"env" json:"env,omitempty"`
 }
 
 // MLConfig configures the ML prediction sidecar.
 type MLConfig struct {
-	Mode         string        `toml:"mode"`          // local | localfirst | remotefirst | remote | disabled
-	RetrainEvery int           `toml:"retrain_every"` // retrain after N completed tasks (0 = manual)
-	Local        MLLocalConfig `toml:"local"`
-	Cloud        MLCloudConfig `toml:"cloud"`
+	Mode         string        `toml:"mode" json:"mode"`
+	RetrainEvery int           `toml:"retrain_every" json:"retrain_every"`
+	Local        MLLocalConfig `toml:"local" json:"local"`
+	Cloud        MLCloudConfig `toml:"cloud" json:"cloud"`
 }
 
 // MLLocalConfig configures the local sigil-ml sidecar.
 type MLLocalConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	ServerURL string `toml:"server_url"`
-	ServerBin string `toml:"server_bin"`
+	Enabled   bool   `toml:"enabled" json:"enabled"`
+	ServerURL string `toml:"server_url" json:"server_url"`
+	ServerBin string `toml:"server_bin" json:"server_bin"`
 }
 
 // MLCloudConfig configures the cloud ML API.
 type MLCloudConfig struct {
-	Enabled bool   `toml:"enabled"`
-	BaseURL string `toml:"base_url"`
-	APIKey  string `toml:"api_key"`
+	Enabled bool   `toml:"enabled" json:"enabled"`
+	BaseURL string `toml:"base_url" json:"base_url"`
+	APIKey  string `toml:"api_key" json:"api_key"`
 }
 
 // CloudConfig holds cloud tier and authentication settings.
 type CloudConfig struct {
-	Tier   string `toml:"tier"` // "free", "pro", "team"
-	APIKey string `toml:"api_key"`
-	OrgID  string `toml:"org_id"` // Team tier only
+	Tier   string `toml:"tier" json:"tier"`
+	APIKey string `toml:"api_key" json:"api_key"`
+	OrgID  string `toml:"org_id" json:"org_id"`
 }
 
 // CloudSyncConfig controls the sync agent behavior.
 type CloudSyncConfig struct {
-	Enabled      *bool  `toml:"enabled"`
-	APIURL       string `toml:"api_url"`
-	BatchSize    int    `toml:"batch_size"`
-	PollInterval string `toml:"poll_interval"` // duration string, e.g. "60s"
+	Enabled      *bool  `toml:"enabled" json:"enabled"`
+	APIURL       string `toml:"api_url" json:"api_url"`
+	BatchSize    int    `toml:"batch_size" json:"batch_size"`
+	PollInterval string `toml:"poll_interval" json:"poll_interval"`
 }
 
 // IsEnabled returns whether cloud sync is enabled (defaults to false if unset).
@@ -93,22 +94,22 @@ func (c CloudSyncConfig) IsEnabled() bool {
 
 // NetworkConfig controls the optional TCP listener.
 type NetworkConfig struct {
-	Enabled            bool     `toml:"enabled"`
-	Bind               string   `toml:"bind"`
-	Port               int      `toml:"port"`
-	AllowedCredentials []string `toml:"allowed_credentials"`
+	Enabled            bool     `toml:"enabled" json:"enabled"`
+	Bind               string   `toml:"bind" json:"bind"`
+	Port               int      `toml:"port" json:"port"`
+	AllowedCredentials []string `toml:"allowed_credentials" json:"allowed_credentials"`
 }
 
 // DaemonConfig covers process-level settings.
 type DaemonConfig struct {
-	LogLevel          string   `toml:"log_level"`
-	WatchDirs         []string `toml:"watch_dirs"`
-	RepoDirs          []string `toml:"repo_dirs"`
-	IgnorePatterns    []string `toml:"ignore_patterns"`
-	DBPath            string   `toml:"db_path"`
-	SocketPath        string   `toml:"socket_path"`
-	MaxWatches        int      `toml:"max_watches"`        // cap on watched directories (0 = default 4096)
-	ActuationsEnabled *bool    `toml:"actuations_enabled"` // nil = default true
+	LogLevel          string   `toml:"log_level" json:"log_level"`
+	WatchDirs         []string `toml:"watch_dirs" json:"watch_dirs"`
+	RepoDirs          []string `toml:"repo_dirs" json:"repo_dirs"`
+	IgnorePatterns    []string `toml:"ignore_patterns" json:"ignore_patterns"`
+	DBPath            string   `toml:"db_path" json:"db_path"`
+	SocketPath        string   `toml:"socket_path" json:"socket_path"`
+	MaxWatches        int      `toml:"max_watches" json:"max_watches"`
+	ActuationsEnabled *bool    `toml:"actuations_enabled" json:"actuations_enabled"`
 }
 
 // IsActuationsEnabled returns whether actuations are enabled (defaults to true).
@@ -121,8 +122,18 @@ func (d DaemonConfig) IsActuationsEnabled() bool {
 
 // NotifierConfig controls how suggestions are surfaced.
 type NotifierConfig struct {
-	Level      *int   `toml:"level"`
-	DigestTime string `toml:"digest_time"` // "HH:MM" in local time
+	Level           *int        `toml:"level" json:"level"`
+	DigestTime      string      `toml:"digest_time" json:"digest_time"`
+	DND             DNDSchedule `toml:"dnd" json:"dnd"`
+	MutedCategories []string    `toml:"muted_categories" json:"muted_categories"`
+}
+
+// DNDSchedule defines a Do Not Disturb window.
+type DNDSchedule struct {
+	Enabled bool     `toml:"enabled" json:"enabled"`
+	Start   string   `toml:"start" json:"start"`
+	End     string   `toml:"end" json:"end"`
+	Days    []string `toml:"days" json:"days"`
 }
 
 // LevelOrDefault returns the notification level, defaulting to 2 (Ambient).
@@ -135,47 +146,47 @@ func (n NotifierConfig) LevelOrDefault() int {
 
 // ScheduleConfig controls analysis timing.
 type ScheduleConfig struct {
-	AnalyzeEvery string `toml:"analyze_every"` // duration string, e.g. "5m", "1h"
+	AnalyzeEvery string `toml:"analyze_every" json:"analyze_every"`
 }
 
 // InferenceConfig configures the inference engine backends.
 type InferenceConfig struct {
-	Mode  string               `toml:"mode"`
-	Local InferenceLocalConfig `toml:"local"`
-	Cloud InferenceCloudConfig `toml:"cloud"`
+	Mode  string               `toml:"mode" json:"mode"`
+	Local InferenceLocalConfig `toml:"local" json:"local"`
+	Cloud InferenceCloudConfig `toml:"cloud" json:"cloud"`
 }
 
 // InferenceLocalConfig configures the local inference backend.
 type InferenceLocalConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	ServerURL string `toml:"server_url"`
-	ServerBin string `toml:"server_bin"`
-	ModelPath string `toml:"model_path"`
-	ModelName string `toml:"model_name"`
-	CtxSize   int    `toml:"ctx_size"`
-	GPULayers int    `toml:"gpu_layers"`
+	Enabled   bool   `toml:"enabled" json:"enabled"`
+	ServerURL string `toml:"server_url" json:"server_url"`
+	ServerBin string `toml:"server_bin" json:"server_bin"`
+	ModelPath string `toml:"model_path" json:"model_path"`
+	ModelName string `toml:"model_name" json:"model_name"`
+	CtxSize   int    `toml:"ctx_size" json:"ctx_size"`
+	GPULayers int    `toml:"gpu_layers" json:"gpu_layers"`
 }
 
 // InferenceCloudConfig configures the cloud inference backend.
 type InferenceCloudConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	Provider string `toml:"provider"`
-	BaseURL  string `toml:"base_url"`
-	APIKey   string `toml:"api_key"`
-	Model    string `toml:"model"`
+	Enabled  bool   `toml:"enabled" json:"enabled"`
+	Provider string `toml:"provider" json:"provider"`
+	BaseURL  string `toml:"base_url" json:"base_url"`
+	APIKey   string `toml:"api_key" json:"api_key"`
+	Model    string `toml:"model" json:"model"`
 }
 
 // RetentionConfig controls how long raw data is kept.
 type RetentionConfig struct {
-	RawEventDays int `toml:"raw_event_days"`
+	RawEventDays int `toml:"raw_event_days" json:"raw_event_days"`
 }
 
 // FleetConfig controls the Fleet Reporter subsystem.
 type FleetConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	Endpoint string `toml:"endpoint"`
-	Interval string `toml:"interval"` // duration string, default "1h"
-	NodeID   string `toml:"node_id"`  // auto-generated if empty
+	Enabled  bool   `toml:"enabled" json:"enabled"`
+	Endpoint string `toml:"endpoint" json:"endpoint"`
+	Interval string `toml:"interval" json:"interval"`
+	NodeID   string `toml:"node_id" json:"node_id"`
 }
 
 // SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.
@@ -221,7 +232,15 @@ func Defaults() *Config {
 }
 
 // DefaultPath returns the canonical config file location, respecting XDG_CONFIG_HOME.
+// On Windows, uses %APPDATA% (Roaming) as the config base.
 func DefaultPath() string {
+	if runtime.GOOS == "windows" {
+		appdata := os.Getenv("APPDATA")
+		if appdata == "" {
+			appdata = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
+		}
+		return filepath.Join(appdata, "sigil", "config.toml")
+	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		h, _ := os.UserHomeDir()
@@ -254,6 +273,11 @@ func Load(path string) (*Config, error) {
 
 	merge(cfg, &file)
 	return cfg, nil
+}
+
+// Marshal serializes a Config to TOML bytes.
+func Marshal(cfg *Config) ([]byte, error) {
+	return toml.Marshal(cfg)
 }
 
 // expandHome replaces a leading ~ with the user's home directory.
@@ -444,6 +468,60 @@ func merge(dst, src *Config) {
 	if src.CloudSync.PollInterval != "" {
 		dst.CloudSync.PollInterval = src.CloudSync.PollInterval
 	}
+}
+
+// Save atomically writes the config to the given path as TOML.
+func Save(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename config: %w", err)
+	}
+	return nil
+}
+
+// MaskKeys returns a copy of the config with sensitive fields masked.
+func MaskKeys(cfg *Config) *Config {
+	c := *cfg // shallow copy
+	c.Inference.Cloud.APIKey = maskString(c.Inference.Cloud.APIKey)
+	// Copy the plugins map to avoid mutating the original
+	if len(c.Plugins) > 0 {
+		masked := make(map[string]PluginConfig, len(c.Plugins))
+		for k, v := range c.Plugins {
+			env := make(map[string]string, len(v.Env))
+			for ek, ev := range v.Env {
+				if strings.Contains(strings.ToLower(ek), "key") || strings.Contains(strings.ToLower(ek), "token") || strings.Contains(strings.ToLower(ek), "secret") {
+					env[ek] = maskString(ev)
+				} else {
+					env[ek] = ev
+				}
+			}
+			v.Env = env
+			masked[k] = v
+		}
+		c.Plugins = masked
+	}
+	return &c
+}
+
+func maskString(s string) string {
+	if len(s) <= 4 {
+		if s == "" {
+			return ""
+		}
+		return "****"
+	}
+	return "****" + s[len(s)-4:]
 }
 
 func expandDirs(dirs []string) []string {

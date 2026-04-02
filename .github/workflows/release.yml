@@ -23,6 +23,8 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
+          - goos: windows
+            goarch: amd64
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +37,7 @@ jobs:
       - name: Sync embedded assets
         run: make sync-assets
 
-      - name: Build binaries
+      - name: Build all binaries
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -44,29 +46,126 @@ jobs:
           VERSION="${{ github.ref_name }}"
           LDFLAGS="-X main.version=${VERSION}"
           SUFFIX="${{ matrix.goos }}-${{ matrix.goarch }}"
-          go build -ldflags "${LDFLAGS}" -o "sigild-${SUFFIX}" ./cmd/sigild/
-          go build -ldflags "${LDFLAGS}" -o "sigilctl-${SUFFIX}" ./cmd/sigilctl/
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+
+          # Core binaries
+          go build -ldflags "${LDFLAGS}" -o "sigild-${SUFFIX}${EXT}" ./cmd/sigild/
+          go build -ldflags "${LDFLAGS}" -o "sigilctl-${SUFFIX}${EXT}" ./cmd/sigilctl/
+
+          # All plugins
           for p in ./plugins/sigil-plugin-*/; do
             name=$(basename "$p")
-            go build -ldflags "${LDFLAGS}" -o "${name}-${SUFFIX}" "$p"
+            go build -ldflags "${LDFLAGS}" -o "${name}-${SUFFIX}${EXT}" "$p"
           done
 
       - name: Generate checksums
         run: |
           SUFFIX="${{ matrix.goos }}-${{ matrix.goarch }}"
-          sha256sum *-${SUFFIX} > "checksums-${SUFFIX}.txt"
+          sha256sum *-${SUFFIX}* > "checksums-${SUFFIX}.txt"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            *-${{ matrix.goos }}-${{ matrix.goarch }}
+            sigild-${{ matrix.goos }}-${{ matrix.goarch }}*
+            sigilctl-${{ matrix.goos }}-${{ matrix.goarch }}*
+            sigil-plugin-*-${{ matrix.goos }}-${{ matrix.goarch }}*
             checksums-${{ matrix.goos }}-${{ matrix.goarch }}.txt
+
+  build-app:
+    name: Build sigil-app (${{ matrix.os }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: sigil-app-linux-amd64
+          - os: macos-latest
+            artifact: sigil-app-darwin-universal
+          - os: windows-latest
+            artifact: sigil-app-windows-amd64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Build sigil-app
+        run: |
+          cd cmd/sigil-app
+          wails build -ldflags "-X main.version=${{ github.ref_name }}"
+
+      - name: Package macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          cd cmd/sigil-app/build/bin
+          zip -r sigil-app-darwin-universal.zip sigil-app.app
+
+      - name: Package Linux binary
+        if: runner.os == 'Linux'
+        run: |
+          cd cmd/sigil-app/build/bin
+          tar czf sigil-app-linux-amd64.tar.gz sigil-app
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd cmd/sigil-app/build/bin
+          7z a sigil-app-windows-amd64.zip sigil-app.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            cmd/sigil-app/build/bin/*.zip
+            cmd/sigil-app/build/bin/*.tar.gz
+
+  build-vscode:
+    name: Build VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and package .vsix
+        run: |
+          cd extensions/vscode
+          npm install
+          npm run compile
+          npx @vscode/vsce package --no-dependencies -o sigil-vscode.vsix
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: extensions/vscode/sigil-vscode.vsix
 
   release:
     name: Publish Release
-    needs: build
+    needs: [build, build-app, build-vscode]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -81,4 +180,6 @@ jobs:
             sigild-*
             sigilctl-*
             sigil-plugin-*
+            sigil-app-*
+            sigil-vscode.vsix
             checksums-*.txt
