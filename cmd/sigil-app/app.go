@@ -27,6 +27,7 @@ type App struct {
 	ctx        context.Context
 	socketPath string
 	connected  bool
+	windowOpen bool // true when the app window is visible/focused
 	mu         sync.RWMutex
 
 	// Persistent subscription connection.
@@ -54,7 +55,20 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.socketPath = defaultSocketPath()
 	a.notifier = newNotifier()
+	a.windowOpen = true // app starts with the window visible
 	a.log.Info("sigil-app starting", "socket", a.socketPath)
+
+	// Track window focus — suppress native notifications when window is open.
+	wailsrt.EventsOn(ctx, "window:focus", func(optionalData ...interface{}) {
+		a.mu.Lock()
+		a.windowOpen = true
+		a.mu.Unlock()
+	})
+	wailsrt.EventsOn(ctx, "window:blur", func(optionalData ...interface{}) {
+		a.mu.Lock()
+		a.windowOpen = false
+		a.mu.Unlock()
+	})
 
 	subCtx, cancel := context.WithCancel(ctx)
 	a.subCancel = cancel
@@ -228,14 +242,24 @@ func (a *App) handlePushLine(line string) {
 		if err := json.Unmarshal(push.Payload, &sg); err == nil {
 			wailsrt.EventsEmit(a.ctx, "suggestion:new", sg)
 
-			title, _ := sg["title"].(string)
-			body, _ := sg["text"].(string)
-			if body == "" {
-				body, _ = sg["body"].(string)
-			}
-			idFloat, _ := sg["id"].(float64)
-			if title != "" {
-				_ = a.notifier.Show(title, body, "", int64(idFloat))
+			// Only fire native (osascript) notification when the app
+			// window is not visible — avoid duplicate alerts.
+			a.mu.RLock()
+			windowVisible := a.windowOpen
+			a.mu.RUnlock()
+
+			if !windowVisible {
+				title, _ := sg["title"].(string)
+				body, _ := sg["text"].(string)
+				if body == "" {
+					body, _ = sg["body"].(string)
+				}
+				idFloat, _ := sg["id"].(float64)
+				if title != "" {
+					if err := a.notifier.Show(title, body, "", int64(idFloat)); err != nil {
+						a.log.Debug("native notification failed", "err", err)
+					}
+				}
 			}
 		}
 	}

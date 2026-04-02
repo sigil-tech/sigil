@@ -27,6 +27,7 @@ declare const window: Window & {
   };
   runtime: {
     EventsOn(event: string, cb: (...args: any[]) => void): () => void;
+    EventsEmit(event: string, ...args: any[]): void;
   };
 };
 
@@ -129,10 +130,19 @@ export function App() {
       }
     );
 
+    // Emit window focus/blur to Go backend so it can suppress native
+    // notifications when the app window is visible.
+    const onFocus = () => window.runtime.EventsEmit("window:focus");
+    const onBlur = () => window.runtime.EventsEmit("window:blur");
+    globalThis.addEventListener("focus", onFocus);
+    globalThis.addEventListener("blur", onBlur);
+
     return () => {
       offSuggestion();
       offConnection();
       offUpdate();
+      globalThis.removeEventListener("focus", onFocus);
+      globalThis.removeEventListener("blur", onBlur);
     };
   }, [fetchSuggestions, fetchTask]);
 
