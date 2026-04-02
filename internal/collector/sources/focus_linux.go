@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // focusBackend queries the active window. Returns (class, title, error).

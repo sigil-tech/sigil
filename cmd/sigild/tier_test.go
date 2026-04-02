@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/wambozi/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/config"
 )
 
 func boolPtr(v bool) *bool { return &v }

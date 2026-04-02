@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // appQuerier returns state for a specific app, or nil if not available.

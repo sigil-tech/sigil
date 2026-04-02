@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // ClipboardSource monitors the macOS system clipboard for changes.

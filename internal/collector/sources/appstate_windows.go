@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // WindowsAppStateSource observes in-app state on Windows by parsing window

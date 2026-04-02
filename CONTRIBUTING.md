@@ -19,7 +19,7 @@ Thanks for your interest in contributing to Sigil.
 ## Development Setup
 
 ```bash
-git clone https://github.com/wambozi/sigil.git
+git clone https://github.com/sigil-tech/sigil.git
 cd sigil
 make build      # build sigild + sigilctl
 make check      # fmt + vet + test — must pass before submitting

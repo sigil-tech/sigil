@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/store"
 )
 
 // --- stub StoreReader --------------------------------------------------------

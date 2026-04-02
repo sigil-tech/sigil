@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigil-tech/sigil/internal/store"
 	"github.com/stretchr/testify/assert"
-	"github.com/wambozi/sigil/internal/store"
 )
 
 func TestComputeStreak(t *testing.T) {

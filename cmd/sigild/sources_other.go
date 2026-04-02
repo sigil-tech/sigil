@@ -5,7 +5,7 @@ package main
 import (
 	"log/slog"
 
-	"github.com/wambozi/sigil/internal/collector"
+	"github.com/sigil-tech/sigil/internal/collector"
 )
 
 // addPlatformSources is a no-op stub for unsupported platforms.

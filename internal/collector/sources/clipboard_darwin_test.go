@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // requireClipboardAccess skips the test if osascript clipboard access is not

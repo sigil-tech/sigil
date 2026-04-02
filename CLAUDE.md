@@ -58,8 +58,6 @@ analyzer (imports event, store, inference, notifier)
   ↑
 actuator (imports event; defines own StoreWriter interface)
   ↑
-fleet (imports event, store, config)
-  ↑
 socket (no internal imports — pure protocol)
   ↑
 cmd/sigild (wires everything together)
@@ -112,7 +110,7 @@ TOML config at `$XDG_CONFIG_HOME/sigil/config.toml`. Sections: `daemon`, `notifi
 
 ## Fleet
 
-Optional telemetry aggregation (`internal/fleet/`). Computes anonymized hourly metrics, reports adoption tier, can receive routing policy from fleet endpoint. Opt-out clears queue and disables.
+Fleet is an external module (`github.com/sigil-tech/sigil-fleet`). The reporter computes anonymized hourly metrics and reports adoption tier to a fleet endpoint. `sigild` wires it in via an adapter in `cmd/sigild/fleet_adapter.go` that satisfies the fleet module's `EventReader` interface. Opt-out clears queue and disables.
 
 ## VS Code Extension
 

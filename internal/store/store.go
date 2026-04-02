@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 

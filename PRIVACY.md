@@ -213,4 +213,4 @@ cursor so it only sends new rows, never re-sends old data.
 
 ## Questions or concerns
 
-Open an issue at <https://github.com/wambozi/sigil/issues>.
+Open an issue at <https://github.com/sigil-tech/sigil/issues>.

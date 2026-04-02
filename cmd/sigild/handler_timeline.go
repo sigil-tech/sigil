@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/socket"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // registerTimelineHandlers adds the timeline socket method.

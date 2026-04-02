@@ -1,3 +1,3 @@
-module github.com/wambozi/sigil/cloud/llm-proxy
+module github.com/sigil-tech/sigil/cloud/llm-proxy
 
 go 1.24

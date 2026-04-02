@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/socket"
 )
 
 // registerInitHandlers adds the check-init and init socket methods.

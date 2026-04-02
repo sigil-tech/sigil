@@ -5,8 +5,8 @@ package main
 import (
 	"log/slog"
 
-	"github.com/wambozi/sigil/internal/collector"
-	"github.com/wambozi/sigil/internal/collector/sources"
+	"github.com/sigil-tech/sigil/internal/collector"
+	"github.com/sigil-tech/sigil/internal/collector/sources"
 )
 
 func addPlatformSources(col *collector.Collector, log *slog.Logger) {

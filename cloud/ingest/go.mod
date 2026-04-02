@@ -1,4 +1,4 @@
-module github.com/wambozi/sigil/cloud/ingest
+module github.com/sigil-tech/sigil/cloud/ingest
 
 go 1.24
 

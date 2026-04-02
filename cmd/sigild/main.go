@@ -32,27 +32,28 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 
-	"github.com/wambozi/sigil/internal/actuator"
-	"github.com/wambozi/sigil/internal/analyzer"
-	"github.com/wambozi/sigil/internal/collector"
-	"github.com/wambozi/sigil/internal/collector/sources"
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/fleet"
-	"github.com/wambozi/sigil/internal/inference"
-	"github.com/wambozi/sigil/internal/mcp"
-	"github.com/wambozi/sigil/internal/ml"
 	"net/http"
 
-	signsync "github.com/wambozi/sigil/internal/sync"
+	fleet "github.com/sigil-tech/sigil-fleet"
+	"github.com/sigil-tech/sigil/internal/actuator"
+	"github.com/sigil-tech/sigil/internal/analyzer"
+	"github.com/sigil-tech/sigil/internal/collector"
+	"github.com/sigil-tech/sigil/internal/collector/sources"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/mcp"
+	"github.com/sigil-tech/sigil/internal/ml"
 
-	siglogging "github.com/wambozi/sigil/internal/logging"
-	"github.com/wambozi/sigil/internal/network"
-	"github.com/wambozi/sigil/internal/notifier"
-	"github.com/wambozi/sigil/internal/plugin"
-	"github.com/wambozi/sigil/internal/socket"
-	"github.com/wambozi/sigil/internal/store"
-	"github.com/wambozi/sigil/internal/task"
+	signsync "github.com/sigil-tech/sigil/internal/sync"
+
+	siglogging "github.com/sigil-tech/sigil/internal/logging"
+	"github.com/sigil-tech/sigil/internal/network"
+	"github.com/sigil-tech/sigil/internal/notifier"
+	"github.com/sigil-tech/sigil/internal/plugin"
+	"github.com/sigil-tech/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/task"
 )
 
 func main() {
@@ -448,7 +449,18 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// --- Fleet Reporter -----------------------------------------------------
 	var fleetReporter *fleet.Reporter
 	if cfg.fileCfg.Fleet.Enabled {
-		fleetReporter = fleet.New(db, cfg.fileCfg.Fleet, log)
+		fleetInterval := time.Hour
+		if cfg.fileCfg.Fleet.Interval != "" {
+			if d, err := time.ParseDuration(cfg.fileCfg.Fleet.Interval); err == nil && d > 0 {
+				fleetInterval = d
+			}
+		}
+		fleetReporter = fleet.New(newFleetStore(db), fleet.Config{
+			Enabled:  cfg.fileCfg.Fleet.Enabled,
+			Endpoint: cfg.fileCfg.Fleet.Endpoint,
+			Interval: fleetInterval,
+			NodeID:   cfg.fileCfg.Fleet.NodeID,
+		}, log)
 		go fleetReporter.Run(ctx)
 		log.Info("fleet reporter started", "endpoint", cfg.fileCfg.Fleet.Endpoint)
 	}

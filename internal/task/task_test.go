@@ -3,7 +3,7 @@ package task
 import (
 	"testing"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // ---------------------------------------------------------------------------

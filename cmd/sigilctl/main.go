@@ -34,12 +34,12 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/inference"
-	"github.com/wambozi/sigil/internal/plugin"
-	"github.com/wambozi/sigil/internal/socket"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/plugin"
+	"github.com/sigil-tech/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 func main() {
