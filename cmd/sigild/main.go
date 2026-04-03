@@ -44,11 +44,11 @@ import (
 	"github.com/wambozi/sigil/internal/ml"
 	"net/http"
 
+	siglogging "github.com/wambozi/sigil/internal/logging"
 	"github.com/wambozi/sigil/internal/network"
 	"github.com/wambozi/sigil/internal/notifier"
 	"github.com/wambozi/sigil/internal/plugin"
 	"github.com/wambozi/sigil/internal/socket"
-	siglogging "github.com/wambozi/sigil/internal/logging"
 	"github.com/wambozi/sigil/internal/store"
 	"github.com/wambozi/sigil/internal/task"
 )
@@ -354,6 +354,19 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	registerTimelineHandlers(srv, db)
 	registerCloudHandlers(srv, cfg)
 	registerNotificationHandlers(srv, cfg)
+
+	// test-notify — dev-only: push a fake suggestion to all subscribers.
+	srv.Handle("test-notify", func(_ context.Context, _ socket.Request) socket.Response {
+		payload := socket.MarshalPayload(map[string]any{
+			"id":         999,
+			"title":      "Test notification",
+			"text":       "This is a test suggestion from sigild",
+			"confidence": 0.9,
+			"action_cmd": "",
+		})
+		srv.Notify("suggestions", payload)
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"sent": true})}
+	})
 
 	// --- MCP Tool Registry + Ask Handler ------------------------------------
 	mcpRegistry := mcp.NewRegistry()

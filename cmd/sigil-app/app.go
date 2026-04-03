@@ -230,8 +230,8 @@ func (a *App) handlePushLine(line string) {
 		if err := json.Unmarshal(push.Payload, &sg); err == nil {
 			wailsrt.EventsEmit(a.ctx, "suggestion:new", sg)
 
-			// Only fire native (osascript) notification when the app
-			// window is not visible — avoid duplicate alerts.
+			// Only fire native notification when the app window is not
+			// focused — avoid duplicating what the in-app list shows.
 			a.mu.RLock()
 			windowVisible := a.windowOpen
 			a.mu.RUnlock()

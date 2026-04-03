@@ -9,19 +9,51 @@ package main
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
-// requestNotificationPermission asks macOS for permission to show notifications.
-// Must be called from the main thread early in the app lifecycle.
-void requestNotificationPermission() {
+// SigilNotificationDelegate allows notifications to be displayed even when
+// the app is in the foreground. Without this, macOS silently suppresses
+// notifications for the frontmost app.
+@interface SigilNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation SigilNotificationDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    // Show banner + sound even when app is in foreground (we gate this in Go).
+    UNNotificationPresentationOptions opts = UNNotificationPresentationOptionSound;
+    if (@available(macOS 11.0, *)) {
+        opts |= UNNotificationPresentationOptionBanner;
+    } else {
+        opts |= UNNotificationPresentationOptionAlert;
+    }
+    completionHandler(opts);
+}
+@end
+
+static SigilNotificationDelegate *_delegate = nil;
+
+// setupNotifications requests permission and installs the delegate.
+void setupNotifications() {
     UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+
+    if (!_delegate) {
+        _delegate = [[SigilNotificationDelegate alloc] init];
+        center.delegate = _delegate;
+    }
+
     [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
                           completionHandler:^(BOOL granted, NSError * _Nullable error) {
         if (error) {
             NSLog(@"Sigil: notification permission error: %@", error);
+        } else if (!granted) {
+            NSLog(@"Sigil: notification permission denied");
+        } else {
+            NSLog(@"Sigil: notification permission granted");
         }
     }];
 }
 
-// showNotification delivers a native macOS notification via UNUserNotificationCenter.
+// showNotification delivers a native macOS notification.
 void showNotification(const char *title, const char *body, const char *identifier) {
     UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
     content.title = [NSString stringWithUTF8String:title];
@@ -49,19 +81,16 @@ import (
 )
 
 // darwinNotifier uses Apple's UNUserNotificationCenter for native macOS
-// notifications. Notifications appear as "Sigil" in Notification Center
-// when the app is built as a .app bundle with a CFBundleIdentifier.
+// notifications. Includes a UNUserNotificationCenterDelegate to allow
+// banner display even when the app is the frontmost process.
 type darwinNotifier struct {
 	once sync.Once
 }
 
 func newNotifier() Notifier {
 	n := &darwinNotifier{}
-	// Request permission on first creation. Apple requires this before
-	// any notification can be delivered. The prompt appears once; the
-	// user's choice is remembered by macOS.
 	n.once.Do(func() {
-		C.requestNotificationPermission()
+		C.setupNotifications()
 	})
 	return n
 }
