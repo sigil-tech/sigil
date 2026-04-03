@@ -1,4 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
+import { HealthPanel } from "../components/HealthPanel";
 
 declare const window: Window & {
   go: {
@@ -160,6 +161,9 @@ export function DaySummary({ onViewTimeline }: { onViewTimeline?: () => void }) 
           ))}
         </div>
       )}
+
+      {/* System Health */}
+      <HealthPanel />
 
       {/* Daemon Info */}
       <div class="summary-section summary-footer">

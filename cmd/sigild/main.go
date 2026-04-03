@@ -354,6 +354,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	registerTimelineHandlers(srv, db)
 	registerCloudHandlers(srv, cfg)
 	registerNotificationHandlers(srv, cfg)
+	registerHealthHandler(srv, cfg)
 
 	// test-notify — dev-only: push a fake suggestion to all subscribers.
 	srv.Handle("test-notify", func(_ context.Context, _ socket.Request) socket.Response {

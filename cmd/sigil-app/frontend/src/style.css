@@ -2023,3 +2023,82 @@ body {
     box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.2);
   }
 }
+
+/* --- Health Panel -------------------------------------------------------- */
+
+.health-panel {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.health-panel.has-issues {
+  border-color: var(--warning);
+  background: rgba(255, 159, 10, 0.06);
+}
+
+.health-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.health-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.health-status {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 8px;
+}
+
+.health-ok {
+  color: var(--success);
+}
+
+.health-degraded {
+  color: var(--warning);
+}
+
+.health-down {
+  color: var(--danger);
+}
+
+.health-disabled {
+  color: var(--fg-secondary);
+}
+
+.health-details {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.health-issue {
+  padding: 4px 0;
+}
+
+.health-issue-msg {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.health-issue-fix {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: 2px;
+}
