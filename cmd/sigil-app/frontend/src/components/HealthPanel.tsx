@@ -15,6 +15,7 @@ declare const window: Window & {
         SetConfig(cfg: any): Promise<any>;
         CloudSignIn(): Promise<void>;
         RestartDaemon(): Promise<void>;
+        StartLocalModel(): Promise<void>;
       };
     };
   };
@@ -83,7 +84,7 @@ export function HealthPanel() {
           await window.go.main.App.SetConfig({ ml: { mode: "disabled" } });
           break;
         case "restart_daemon":
-          await window.go.main.App.RestartDaemon();
+          await window.go.main.App.StartLocalModel();
           break;
       }
     } catch {

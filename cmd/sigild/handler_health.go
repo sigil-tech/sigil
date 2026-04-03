@@ -78,13 +78,21 @@ func checkLLMHealth(cfg daemonConfig) serviceHealth {
 			}
 		}
 
-		// Local is down — check if binary exists.
-		serverBin := cfg.fileCfg.Inference.Local.ServerBin
-		if serverBin == "" {
-			serverBin = "llama-server"
+		// Local is down — check if any supported server binary exists.
+		hasBinary := false
+		for _, bin := range []string{
+			cfg.fileCfg.Inference.Local.ServerBin,
+			"llama-server",
+			"ollama",
+		} {
+			if bin == "" {
+				continue
+			}
+			if _, err := exec.LookPath(bin); err == nil {
+				hasBinary = true
+				break
+			}
 		}
-		_, binErr := exec.LookPath(serverBin)
-		hasBinary := binErr == nil
 
 		// Local is down but cloud fallback is active.
 		if cloudEnabled && hasCloudCreds {
