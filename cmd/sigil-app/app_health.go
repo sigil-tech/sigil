@@ -7,10 +7,16 @@ import (
 
 // ServiceHealth describes the health of a backend service.
 type ServiceHealth struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Fix     string `json:"fix,omitempty"`
+	Name    string         `json:"name"`
+	Status  string         `json:"status"`
+	Message string         `json:"message"`
+	Actions []HealthAction `json:"actions,omitempty"`
+}
+
+// HealthAction is a one-click fix the user can apply.
+type HealthAction struct {
+	Label  string `json:"label"`
+	Action string `json:"action"`
 }
 
 // HealthResult holds the health of all backend services.

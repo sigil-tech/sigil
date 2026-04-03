@@ -2,6 +2,7 @@ import { useState, useEffect } from "preact/hooks";
 import { Toggle } from "../components/Toggle";
 import { EditableList } from "../components/EditableList";
 import { CloudSettings } from "../components/CloudStatus";
+import { HealthPanel } from "../components/HealthPanel";
 
 declare const window: Window & {
   go: {
@@ -243,6 +244,9 @@ export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => voi
           Some changes require a daemon restart to take effect.
         </div>
       )}
+
+      {/* Health — only shows when there are issues */}
+      <HealthPanel />
 
       {/* Daemon Control */}
       <div class="settings-section">

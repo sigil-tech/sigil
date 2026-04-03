@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -12,19 +11,24 @@ import (
 
 // serviceHealth describes the health of a single backend service.
 type serviceHealth struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"`  // "ok", "degraded", "down", "disabled"
-	Message string `json:"message"` // human-readable explanation
-	Fix     string `json:"fix"`     // actionable fix suggestion
+	Name    string         `json:"name"`
+	Status  string         `json:"status"`  // "ok", "degraded", "down", "disabled"
+	Message string         `json:"message"` // user-friendly, no jargon
+	Actions []healthAction `json:"actions"` // push-button fixes
+}
+
+// healthAction is a single fix the user can apply with one click.
+type healthAction struct {
+	Label  string `json:"label"`  // button text
+	Action string `json:"action"` // machine-readable action code
 }
 
 // registerHealthHandler adds the health socket method.
 func registerHealthHandler(srv *socket.Server, cfg daemonConfig) {
 	srv.Handle("health", func(ctx context.Context, _ socket.Request) socket.Response {
 		services := []serviceHealth{
-			checkDaemon(cfg),
-			checkLLM(cfg),
-			checkML(cfg),
+			checkLLMHealth(cfg),
+			checkMLHealth(cfg),
 		}
 
 		payload, _ := json.Marshal(map[string]any{
@@ -34,154 +38,159 @@ func registerHealthHandler(srv *socket.Server, cfg daemonConfig) {
 	})
 }
 
-func checkDaemon(cfg daemonConfig) serviceHealth {
-	return serviceHealth{
-		Name:    "Daemon",
-		Status:  "ok",
-		Message: fmt.Sprintf("Running, RSS %dMB", 0), // filled by caller if needed
-	}
-}
-
-func checkLLM(cfg daemonConfig) serviceHealth {
-	mode := cfg.fileCfg.Inference.Mode
+func checkLLMHealth(cfg daemonConfig) serviceHealth {
 	localEnabled := cfg.fileCfg.Inference.Local.Enabled
 	cloudEnabled := cfg.fileCfg.Inference.Cloud.Enabled
+	hasCloudCreds := cfg.fileCfg.Inference.Cloud.APIKey != "" || cfg.fileCfg.Cloud.APIKey != ""
 
-	if mode == "" {
-		mode = "localfirst"
-	}
-
-	// If both are disabled, inference is off.
 	if !localEnabled && !cloudEnabled {
 		return serviceHealth{
-			Name:    "LLM Inference",
+			Name:    "AI Suggestions",
 			Status:  "disabled",
-			Message: "No inference backend enabled",
-			Fix:     "Enable local or cloud inference in Settings > LLM Inference",
+			Message: "AI is turned off — suggestions use heuristics only",
+			Actions: []healthAction{
+				{Label: "Enable Cloud AI", Action: "enable_cloud_llm"},
+				{Label: "Set Up Local AI", Action: "enable_local_llm"},
+			},
 		}
 	}
 
-	// Check local if enabled.
 	if localEnabled {
 		url := cfg.fileCfg.Inference.Local.ServerURL
 		if url == "" {
 			url = "http://127.0.0.1:11434"
 		}
-		if err := pingHTTP(url + "/health"); err != nil {
-			if !cloudEnabled {
-				return serviceHealth{
-					Name:    "LLM Inference",
-					Status:  "down",
-					Message: fmt.Sprintf("Local server unreachable at %s", url),
-					Fix:     "Start llama-server or enable cloud fallback in Settings",
-				}
-			}
-			// Local down but cloud available.
-			if cloudEnabled {
-				if cfg.fileCfg.Inference.Cloud.APIKey == "" && cfg.fileCfg.Cloud.APIKey == "" {
-					return serviceHealth{
-						Name:    "LLM Inference",
-						Status:  "degraded",
-						Message: "Local server down, cloud has no credentials",
-						Fix:     "Start llama-server or sign in to Sigil Cloud",
-					}
-				}
-				return serviceHealth{
-					Name:    "LLM Inference",
-					Status:  "degraded",
-					Message: "Local server down, using cloud fallback",
-				}
+		if err := pingHTTP(url + "/health"); err == nil {
+			return serviceHealth{
+				Name:    "AI Suggestions",
+				Status:  "ok",
+				Message: "Running on your machine",
 			}
 		}
+		// Local is down.
+		if cloudEnabled && hasCloudCreds {
+			return serviceHealth{
+				Name:    "AI Suggestions",
+				Status:  "ok",
+				Message: "Using cloud (local model is offline)",
+			}
+		}
+		if cloudEnabled && !hasCloudCreds {
+			return serviceHealth{
+				Name:    "AI Suggestions",
+				Status:  "down",
+				Message: "Local model is offline and cloud isn't signed in",
+				Actions: []healthAction{
+					{Label: "Sign In to Cloud", Action: "cloud_signin"},
+					{Label: "Turn Off AI", Action: "disable_llm"},
+				},
+			}
+		}
+		// Local only, and it's down.
 		return serviceHealth{
-			Name:    "LLM Inference",
-			Status:  "ok",
-			Message: fmt.Sprintf("Local server reachable (%s)", url),
+			Name:    "AI Suggestions",
+			Status:  "down",
+			Message: "Local model is offline",
+			Actions: []healthAction{
+				{Label: "Switch to Cloud AI", Action: "enable_cloud_llm"},
+				{Label: "Turn Off AI", Action: "disable_llm"},
+			},
 		}
 	}
 
 	// Cloud only.
-	if cfg.fileCfg.Inference.Cloud.APIKey == "" && cfg.fileCfg.Cloud.APIKey == "" {
+	if !hasCloudCreds {
 		return serviceHealth{
-			Name:    "LLM Inference",
+			Name:    "AI Suggestions",
 			Status:  "down",
-			Message: "Cloud mode enabled but no credentials",
-			Fix:     "Sign in to Sigil Cloud in Settings",
+			Message: "Cloud AI enabled but not signed in",
+			Actions: []healthAction{
+				{Label: "Sign In", Action: "cloud_signin"},
+			},
 		}
 	}
 	return serviceHealth{
-		Name:    "LLM Inference",
+		Name:    "AI Suggestions",
 		Status:  "ok",
-		Message: "Cloud inference configured",
+		Message: "Using cloud AI",
 	}
 }
 
-func checkML(cfg daemonConfig) serviceHealth {
+func checkMLHealth(cfg daemonConfig) serviceHealth {
 	mode := cfg.fileCfg.ML.Mode
 	if mode == "disabled" || mode == "" {
 		return serviceHealth{
-			Name:    "ML Pipeline",
+			Name:    "Smart Predictions",
 			Status:  "disabled",
-			Message: "ML predictions disabled",
-			Fix:     "Enable ML in Settings > ML Pipeline",
+			Message: "Predictions are turned off",
+			Actions: []healthAction{
+				{Label: "Enable Predictions", Action: "enable_ml"},
+			},
 		}
 	}
 
 	localEnabled := cfg.fileCfg.ML.Local.Enabled
 	cloudEnabled := cfg.fileCfg.ML.Cloud.Enabled
+	hasCloudCreds := cfg.fileCfg.ML.Cloud.APIKey != "" || cfg.fileCfg.Cloud.APIKey != ""
 
 	if localEnabled {
 		url := cfg.fileCfg.ML.Local.ServerURL
 		if url == "" {
 			url = "http://127.0.0.1:7774"
 		}
-		if err := pingHTTP(url + "/health"); err != nil {
-			if !cloudEnabled {
-				return serviceHealth{
-					Name:    "ML Pipeline",
-					Status:  "down",
-					Message: fmt.Sprintf("sigil-ml unreachable at %s", url),
-					Fix:     "Start sigil-ml or enable cloud ML in Settings",
-				}
-			}
+		if err := pingHTTP(url + "/health"); err == nil {
 			return serviceHealth{
-				Name:    "ML Pipeline",
-				Status:  "degraded",
-				Message: "Local sigil-ml down, using cloud fallback",
+				Name:    "Smart Predictions",
+				Status:  "ok",
+				Message: "Running on your machine",
+			}
+		}
+		if cloudEnabled && hasCloudCreds {
+			return serviceHealth{
+				Name:    "Smart Predictions",
+				Status:  "ok",
+				Message: "Using cloud (local is offline)",
 			}
 		}
 		return serviceHealth{
-			Name:    "ML Pipeline",
-			Status:  "ok",
-			Message: "sigil-ml reachable",
+			Name:    "Smart Predictions",
+			Status:  "down",
+			Message: "Prediction service is offline",
+			Actions: []healthAction{
+				{Label: "Switch to Cloud", Action: "enable_cloud_ml"},
+				{Label: "Turn Off", Action: "disable_ml"},
+			},
 		}
 	}
 
 	if cloudEnabled {
-		if cfg.fileCfg.ML.Cloud.APIKey == "" && cfg.fileCfg.Cloud.APIKey == "" {
+		if !hasCloudCreds {
 			return serviceHealth{
-				Name:    "ML Pipeline",
+				Name:    "Smart Predictions",
 				Status:  "down",
-				Message: "Cloud ML enabled but no credentials",
-				Fix:     "Sign in to Sigil Cloud in Settings",
+				Message: "Cloud predictions enabled but not signed in",
+				Actions: []healthAction{
+					{Label: "Sign In", Action: "cloud_signin"},
+				},
 			}
 		}
 		return serviceHealth{
-			Name:    "ML Pipeline",
+			Name:    "Smart Predictions",
 			Status:  "ok",
-			Message: "Cloud ML configured",
+			Message: "Using cloud predictions",
 		}
 	}
 
 	return serviceHealth{
-		Name:    "ML Pipeline",
+		Name:    "Smart Predictions",
 		Status:  "disabled",
-		Message: "No ML backend enabled",
-		Fix:     "Enable local or cloud ML in Settings > ML Pipeline",
+		Message: "No prediction backend configured",
+		Actions: []healthAction{
+			{Label: "Enable Predictions", Action: "enable_ml"},
+		},
 	}
 }
 
-// pingHTTP does a quick GET to check if a service is reachable.
 func pingHTTP(url string) error {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(url)

@@ -2026,24 +2026,25 @@ body {
 
 /* --- Health Panel -------------------------------------------------------- */
 
-.health-panel {
+.health-panel.has-issues {
   margin: 12px 0;
-  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.health-issue-card {
+  padding: 14px;
   border-radius: var(--radius);
   background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  border: 1px solid var(--warning);
 }
 
-.health-panel.has-issues {
-  border-color: var(--warning);
-  background: rgba(255, 159, 10, 0.06);
-}
-
-.health-row {
+.health-issue-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
+  margin-bottom: 6px;
 }
 
 .health-dot {
@@ -2053,52 +2054,35 @@ body {
   flex-shrink: 0;
 }
 
-.health-name {
-  flex: 1;
+.health-issue-name {
   font-size: 13px;
+  font-weight: 600;
   color: var(--fg);
-}
-
-.health-status {
-  font-size: 11px;
-  font-weight: 500;
-  padding: 1px 8px;
-  border-radius: 8px;
-}
-
-.health-ok {
-  color: var(--success);
-}
-
-.health-degraded {
-  color: var(--warning);
-}
-
-.health-down {
-  color: var(--danger);
-}
-
-.health-disabled {
-  color: var(--fg-secondary);
-}
-
-.health-details {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.health-issue {
-  padding: 4px 0;
 }
 
 .health-issue-msg {
+  font-size: 13px;
+  color: var(--fg-secondary);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.health-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.health-action-btn {
   font-size: 12px;
+  padding: 6px 14px;
+}
+
+.health-action-btn:not(.btn-primary) {
+  background: var(--bg);
+  border: 1px solid var(--border);
   color: var(--fg);
 }
 
-.health-issue-fix {
-  font-size: 11px;
-  color: var(--accent);
-  margin-top: 2px;
+.health-action-btn:not(.btn-primary):hover {
+  background: var(--card-hover);
 }
