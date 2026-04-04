@@ -2086,3 +2086,27 @@ body {
 .health-action-btn:not(.btn-primary):hover {
   background: var(--card-hover);
 }
+
+/* --- Accessibility Prompt ------------------------------------------------ */
+
+.wizard-accessibility {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.wizard-accessibility.granted {
+  background: rgba(52, 199, 89, 0.08);
+  border-color: var(--success);
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.wizard-accessibility-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
