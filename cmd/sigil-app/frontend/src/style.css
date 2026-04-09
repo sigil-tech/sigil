@@ -2110,3 +2110,14 @@ body {
   font-weight: 600;
   margin-bottom: 6px;
 }
+
+/* --- Permissions --------------------------------------------------------- */
+
+.permission-granted {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--success);
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(52, 199, 89, 0.1);
+}
