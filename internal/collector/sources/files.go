@@ -140,6 +140,7 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 					},
 					Timestamp: time.Now(),
 				}
+				EnrichFileEvent(&e)
 				select {
 				case ch <- e:
 				case <-ctx.Done():

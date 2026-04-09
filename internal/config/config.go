@@ -35,6 +35,64 @@ type Config struct {
 	Cloud     CloudConfig             `toml:"cloud" json:"cloud"`
 	CloudSync CloudSyncConfig         `toml:"cloud_sync" json:"cloud_sync"`
 	Sync      SyncConfig              `toml:"sync" json:"sync"`
+	Sources   SourcesConfig           `toml:"sources" json:"sources"`
+}
+
+// SourcesConfig controls per-source enable/disable and options.
+type SourcesConfig struct {
+	Idle         SourceEnabled        `toml:"idle" json:"idle"`
+	Typing       SourceEnabled        `toml:"typing" json:"typing"`
+	Pointer      SourceEnabled        `toml:"pointer" json:"pointer"`
+	Desktop      SourceEnabled        `toml:"desktop" json:"desktop"`
+	Display      SourceEnabled        `toml:"display" json:"display"`
+	Audio        SourceEnabled        `toml:"audio" json:"audio"`
+	Power        SourceEnabled        `toml:"power" json:"power"`
+	Network      NetworkSourceConfig  `toml:"network" json:"network"`
+	FocusMode    SourceEnabled        `toml:"focus_mode" json:"focus_mode"`
+	AppLifecycle SourceEnabled        `toml:"app_lifecycle" json:"app_lifecycle"`
+	Screenshot   SourceEnabled        `toml:"screenshot" json:"screenshot"`
+	Download     DownloadSourceConfig `toml:"download" json:"download"`
+	Calendar     CalendarSourceConfig `toml:"calendar" json:"calendar"`
+	Browser      BrowserSourceConfig  `toml:"browser" json:"browser"`
+}
+
+// SourceEnabled is a simple enable/disable toggle for a source.
+type SourceEnabled struct {
+	Enabled *bool `toml:"enabled" json:"enabled"`
+}
+
+// IsEnabled returns whether the source is enabled, using the provided default
+// when the user hasn't explicitly set a value.
+func (s SourceEnabled) IsEnabled(defaultOn bool) bool {
+	if s.Enabled == nil {
+		return defaultOn
+	}
+	return *s.Enabled
+}
+
+// NetworkSourceConfig adds SSID hashing option.
+type NetworkSourceConfig struct {
+	Enabled  *bool `toml:"enabled" json:"enabled"`
+	HashSSID bool  `toml:"hash_ssid" json:"hash_ssid"`
+}
+
+// DownloadSourceConfig adds watch directory.
+type DownloadSourceConfig struct {
+	Enabled  *bool  `toml:"enabled" json:"enabled"`
+	WatchDir string `toml:"watch_dir" json:"watch_dir"`
+}
+
+// CalendarSourceConfig adds calendar filter.
+type CalendarSourceConfig struct {
+	Enabled   *bool    `toml:"enabled" json:"enabled"`
+	Calendars []string `toml:"calendars" json:"calendars"`
+}
+
+// BrowserSourceConfig adds domain blocklist and poll interval.
+type BrowserSourceConfig struct {
+	Enabled        *bool    `toml:"enabled" json:"enabled"`
+	BlockedDomains []string `toml:"blocked_domains" json:"blocked_domains"`
+	PollInterval   string   `toml:"poll_interval" json:"poll_interval"`
 }
 
 // SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.

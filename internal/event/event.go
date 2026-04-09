@@ -9,14 +9,28 @@ import "time"
 type Kind string
 
 const (
-	KindFile      Kind = "file"      // inotify / fsnotify
-	KindProcess   Kind = "process"   // /proc polling
-	KindHyprland  Kind = "hyprland"  // Hyprland compositor IPC
-	KindGit       Kind = "git"       // git repository activity
-	KindTerminal  Kind = "terminal"  // shell command (pushed via socket ingest)
-	KindAI        Kind = "ai"        // AI interaction (query, suggestion)
-	KindClipboard Kind = "clipboard" // clipboard changes
-	KindAppState  Kind = "app_state" // frontmost app internal state
+	KindFile         Kind = "file"          // inotify / fsnotify
+	KindProcess      Kind = "process"       // /proc polling
+	KindHyprland     Kind = "hyprland"      // Hyprland compositor IPC
+	KindGit          Kind = "git"           // git repository activity
+	KindTerminal     Kind = "terminal"      // shell command (pushed via socket ingest)
+	KindAI           Kind = "ai"            // AI interaction (query, suggestion)
+	KindClipboard    Kind = "clipboard"     // clipboard changes
+	KindAppState     Kind = "app_state"     // frontmost app internal state
+	KindIdle         Kind = "idle"          // active/idle/lock transitions
+	KindTyping       Kind = "typing"        // keystroke rate (not keys)
+	KindPointer      Kind = "pointer"       // mouse/trackpad aggregate metrics
+	KindDesktop      Kind = "desktop"       // virtual desktop switches
+	KindDisplay      Kind = "display"       // monitor connect/disconnect
+	KindAudio        Kind = "audio"         // headphones/mic state
+	KindPower        Kind = "power"         // AC/battery transitions
+	KindNetwork      Kind = "network"       // connection type changes
+	KindFocusMode    Kind = "focus_mode"    // OS DND/Focus state
+	KindAppLifecycle Kind = "app_lifecycle" // app launch/quit/crash
+	KindScreenshot   Kind = "screenshot"    // screenshot captured
+	KindDownload     Kind = "download"      // file downloaded
+	KindCalendar     Kind = "calendar"      // meeting boundaries
+	KindBrowser      Kind = "browser"       // browser page context
 )
 
 // Event is the atomic unit of observation.  Payload is kept as a generic map

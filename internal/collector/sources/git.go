@@ -60,6 +60,7 @@ func (s *GitSource) Events(ctx context.Context) (<-chan event.Event, error) {
 				if !ok {
 					continue // not interesting
 				}
+				enrichGitEvent(&e)
 				select {
 				case ch <- e:
 				case <-ctx.Done():
