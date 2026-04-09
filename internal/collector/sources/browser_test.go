@@ -50,7 +50,7 @@ func TestStripBrowserSuffix(t *testing.T) {
 		{"GitHub - Brave", "GitHub"},
 		{"My Page - Microsoft Edge", "My Page"},
 		{"untitled - Vivaldi", "untitled"},
-		{"Some Page", "Some Page"}, // no suffix
+		{"Some Page", "Some Page"},     // no suffix
 		{"Safari page", "Safari page"}, // Safari has no suffix
 	}
 

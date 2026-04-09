@@ -10,11 +10,11 @@ func TestParseGitDiffStat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		output        string
-		wantFiles     int
-		wantInsert    int
-		wantDelete    int
+		name       string
+		output     string
+		wantFiles  int
+		wantInsert int
+		wantDelete int
 	}{
 		{
 			name:       "typical_stat",

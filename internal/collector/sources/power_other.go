@@ -11,7 +11,7 @@ import (
 // PowerSource is a stub on non-macOS platforms.
 type PowerSource struct{}
 
-func NewPowerSource() *PowerSource { return &PowerSource{} }
+func NewPowerSource() *PowerSource  { return &PowerSource{} }
 func (s *PowerSource) Name() string { return "power" }
 func (s *PowerSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	ch := make(chan event.Event)

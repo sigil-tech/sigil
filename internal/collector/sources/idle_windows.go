@@ -12,12 +12,12 @@ import (
 )
 
 var (
-	idleUser32         = syscall.NewLazyDLL("user32.dll")
-	getLastInputInfo   = idleUser32.NewProc("GetLastInputInfo")
-	idleKernel32       = syscall.NewLazyDLL("kernel32.dll")
-	getTickCount       = idleKernel32.NewProc("GetTickCount")
-	lockWorkStation    = idleUser32.NewProc("LockWorkStation")
-	getSystemMetricsW  = idleUser32.NewProc("GetSystemMetrics")
+	idleUser32        = syscall.NewLazyDLL("user32.dll")
+	getLastInputInfo  = idleUser32.NewProc("GetLastInputInfo")
+	idleKernel32      = syscall.NewLazyDLL("kernel32.dll")
+	getTickCount      = idleKernel32.NewProc("GetTickCount")
+	lockWorkStation   = idleUser32.NewProc("LockWorkStation")
+	getSystemMetricsW = idleUser32.NewProc("GetSystemMetrics")
 )
 
 // LASTINPUTINFO is the Windows structure for GetLastInputInfo.

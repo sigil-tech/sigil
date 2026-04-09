@@ -19,10 +19,10 @@ var (
 )
 
 const (
-	hkeyCurrentUser      = 0x80000001
-	keyRead              = 0x20019
-	errorSuccess         = 0
-	regBinary            = 3
+	hkeyCurrentUser = 0x80000001
+	keyRead         = 0x20019
+	errorSuccess    = 0
+	regBinary       = 3
 )
 
 // Focus Assist registry path under HKCU. This key stores the Focus Assist

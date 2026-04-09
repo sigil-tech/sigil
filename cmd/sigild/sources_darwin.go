@@ -16,10 +16,10 @@ func addPlatformSources(col *collector.Collector, log *slog.Logger) {
 	col.Add(&sources.ClipboardSource{})
 
 	// Spec 023: Knowledge worker signals.
-	col.Add(sources.NewIdleSource(0))        // default 5m threshold
-	col.Add(sources.NewPowerSource())         // battery/AC
-	col.Add(sources.NewScreenshotSource())    // screenshot detection
-	col.Add(sources.NewDownloadSource(""))    // ~/Downloads
+	col.Add(sources.NewIdleSource(0))      // default 5m threshold
+	col.Add(sources.NewPowerSource())      // battery/AC
+	col.Add(sources.NewScreenshotSource()) // screenshot detection
+	col.Add(sources.NewDownloadSource("")) // ~/Downloads
 
 	// Spec 024: Browser context enrichment.
 	bs := sources.NewBrowserSource(0, nil)

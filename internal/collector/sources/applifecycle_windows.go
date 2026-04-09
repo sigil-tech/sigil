@@ -18,10 +18,10 @@ var (
 	process32NextW           = alcKernel32.NewProc("Process32NextW")
 	alcCloseHandle           = alcKernel32.NewProc("CloseHandle")
 
-	alcUser32        = syscall.NewLazyDLL("user32.dll")
-	enumWindows      = alcUser32.NewProc("EnumWindows")
-	isWindowVisible  = alcUser32.NewProc("IsWindowVisible")
-	alcGetWindowTPI  = alcUser32.NewProc("GetWindowThreadProcessId")
+	alcUser32       = syscall.NewLazyDLL("user32.dll")
+	enumWindows     = alcUser32.NewProc("EnumWindows")
+	isWindowVisible = alcUser32.NewProc("IsWindowVisible")
+	alcGetWindowTPI = alcUser32.NewProc("GetWindowThreadProcessId")
 )
 
 const (

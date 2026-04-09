@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	batStatusPath  = "/sys/class/power_supply/BAT0/status"
+	batStatusPath   = "/sys/class/power_supply/BAT0/status"
 	batCapacityPath = "/sys/class/power_supply/BAT0/capacity"
 )
 

@@ -59,8 +59,14 @@ func (s *BrowserSource) Events(ctx context.Context) (<-chan event.Event, error) 
 				var title, rawURL string
 				if s.ReadActiveTab != nil {
 					pollCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-					title, rawURL, _ = s.ReadActiveTab(pollCtx, app)
+					var err error
+					title, rawURL, err = s.ReadActiveTab(pollCtx, app)
 					cancel()
+					// AppleScript errors are expected (browser not running,
+					// permission denied). Fall through to window title parsing.
+					if err != nil {
+						title = ""
+					}
 				}
 
 				// Fall back to window title parsing if no direct query.

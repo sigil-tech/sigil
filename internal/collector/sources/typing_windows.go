@@ -13,11 +13,11 @@ import (
 )
 
 var (
-	typUser32          = syscall.NewLazyDLL("user32.dll")
-	setWindowsHookExW  = typUser32.NewProc("SetWindowsHookExW")
-	callNextHookEx     = typUser32.NewProc("CallNextHookEx")
+	typUser32           = syscall.NewLazyDLL("user32.dll")
+	setWindowsHookExW   = typUser32.NewProc("SetWindowsHookExW")
+	callNextHookEx      = typUser32.NewProc("CallNextHookEx")
 	unhookWindowsHookEx = typUser32.NewProc("UnhookWindowsHookEx")
-	getMessage         = typUser32.NewProc("GetMessageW")
+	getMessage          = typUser32.NewProc("GetMessageW")
 )
 
 const (
@@ -90,9 +90,16 @@ func (s *TypingSource) Events(ctx context.Context) (<-chan event.Event, error) {
 
 		hook, _, err := setWindowsHookExW.Call(whKeyboardLL, hookCallback, 0, 0)
 		if hook == 0 {
-			// If we can't install the hook (e.g., insufficient permissions),
-			// log the error via the channel mechanism and exit gracefully.
-			_ = err // hook installation failed
+			// Hook installation failed (insufficient permissions or
+			// unsupported environment). Degrade gracefully — emit nothing.
+			// err is the Windows errno which is non-nil even on success,
+			// so we only use it for the failure case here.
+			emit(ch, ctx, event.Event{
+				Kind:      event.KindTyping,
+				Source:    s.Name(),
+				Payload:   map[string]any{"error": err.Error()},
+				Timestamp: time.Now(),
+			})
 			return
 		}
 		defer unhookWindowsHookEx.Call(hook)

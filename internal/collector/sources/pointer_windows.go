@@ -111,7 +111,13 @@ func (s *PointerSource) Events(ctx context.Context) (<-chan event.Event, error) 
 
 		hook, _, err := ptrSetWindowsHookEx.Call(whMouseLL, hookCallback, 0, 0)
 		if hook == 0 {
-			_ = err
+			// Hook failed — degrade gracefully.
+			emit(ch, ctx, event.Event{
+				Kind:      event.KindPointer,
+				Source:    s.Name(),
+				Payload:   map[string]any{"error": err.Error()},
+				Timestamp: time.Now(),
+			})
 			return
 		}
 		defer ptrUnhookWindowsHook.Call(hook)
@@ -139,10 +145,10 @@ func (s *PointerSource) Events(ctx context.Context) (<-chan event.Event, error) 
 						Kind:   event.KindPointer,
 						Source: s.Name(),
 						Payload: map[string]any{
-							"clicks":        int(clicks),
+							"clicks":         int(clicks),
 							"scroll_notches": int(scrolls),
-							"move_pixels":   int(moveDist),
-							"window_secs":   int(s.Window.Seconds()),
+							"move_pixels":    int(moveDist),
+							"window_secs":    int(s.Window.Seconds()),
 						},
 						Timestamp: time.Now(),
 					}:
