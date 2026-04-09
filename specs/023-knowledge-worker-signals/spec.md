@@ -1,8 +1,8 @@
 # 023 — Knowledge Worker Signal Enrichment
 
-**Status:** Draft
+**Status:** Draft (v2)
 **Author:** Alec Feeman
-**Date:** 2026-04-04
+**Date:** 2026-04-08
 
 ---
 
@@ -10,98 +10,340 @@
 
 Sigil currently captures signals optimized for software engineers: file edits, git activity, terminal commands, process lifecycle. Knowledge workers outside engineering — product managers, designers, analysts, executives — spend their day in browsers, calendars, documents, and communication tools. Sigil sees none of this.
 
-Even for engineers, critical context is missing. The daemon knows "the user switched to Chrome" but not "the user is reading React docs for the third time this session." It knows "a commit happened" but not the commit message, branch, or diff stats. It detects "the user was idle" only by the absence of events, not by actual idle/active state.
+Even for engineers, critical context is missing. The daemon knows "the user switched to Chrome" but not what they're reading. It knows "a commit happened" but not the commit message or diff stats. It can't distinguish a focused deep-work session from someone staring at a locked screen.
 
-Without richer signals, the ML models can't learn meaningful patterns. Recommendations stay generic ("you context-switch a lot") instead of actionable ("you spend 40 minutes researching before each PR — try writing a design doc first").
+Without comprehensive signals, ML models can't learn meaningful patterns. This spec defines every daemon-native signal source we need to capture a complete picture of how a knowledge worker interacts with their system.
 
 ## Goals
 
-1. **Daemon-native sources**: Add idle detection, typing velocity, git enrichment, and file metadata enrichment directly in sigild — zero setup, works for everyone.
-
-2. **Browser extension**: Capture page titles and domains (not URLs, not content) from Chrome/Firefox/Safari via a lightweight extension that pushes events to sigild's ingest endpoint.
-
-3. **Calendar integration**: Read-only access to the local calendar (macOS EventKit, Google Calendar API) to capture meeting boundaries and free/busy blocks.
-
-4. **Plugin-based third-party sources**: Slack, Zoom, Google Docs, Notion, and Microsoft Teams via the existing plugin system — opt-in, separate install, same event schema.
-
-5. **Sufficient signal density for ML**: After this spec, sigild should capture enough data for sigil-ml to answer: "When is the user most productive?", "What causes context-switch storms?", "How much time goes to meetings vs deep work?", and "What research patterns precede productive coding sessions?"
+1. **Capture every meaningful user-system interaction** at the metadata level — input patterns, system state, application lifecycle, environment context.
+2. **All daemon-native** — no extensions, no plugins, no separate installs. Works out of the box for every user.
+3. **Cross-platform** — macOS, Linux, Windows implementations for every source.
+4. **Privacy-preserving** — metadata and rates only, never content. User can disable any source.
+5. **ML-ready** — sufficient signal density for models to predict focus state, productivity patterns, context-switch cost, and optimal work schedules.
 
 ## Non-Goals
 
-- Keylogging or screen recording — we capture typing *rate*, not keystrokes.
-- Reading document content — we capture document names and metadata, not text.
-- Browser URL capture — we capture domain and page title, not full URLs (privacy).
-- Real-time collaboration monitoring — we detect "user is in Google Docs" not "user is editing paragraph 3."
-- Modifying the analyzer or notifier — this spec is about data collection, not recommendations.
+- Keylogging or screen recording
+- Reading document content, email bodies, or message text
+- Browser URL capture (domain only — handled by specs 024/025)
+- Plugin-based third-party integrations (Slack, Zoom, etc. — separate specs)
 
 ---
 
 ## Design
 
-### Part 1: Daemon-Native Sources
+### Part 1: Input Signals
 
-These require no user setup beyond running sigild. They use the existing `collector.Source` interface and emit standard `event.Event` values.
+How the user physically interacts with their machine.
 
-#### 1.1 Idle Detection (`sources.IdleSource`)
+#### 1.1 Idle Detection
 
-**Platform:** macOS (CGEventSource), Linux (XScreenSaver), Windows (GetLastInputInfo)
-
-**Events:**
-- `idle:start` — no keyboard/mouse input for 5 minutes (configurable)
-- `idle:end` — input resumes after an idle period
-- `screen:lock` / `screen:unlock` — screen saver or lock screen engaged/disengaged
+**What:** Active/idle transitions and screen lock state.
 
 **Event kind:** `idle`
 
-**Payload:**
 ```json
-{
-  "state": "idle_start|idle_end|screen_lock|screen_unlock",
-  "idle_seconds": 342,
-  "last_input_type": "keyboard|mouse"
-}
+{"state": "idle_start", "idle_seconds": 0}
+{"state": "idle_end", "idle_seconds": 342}
+{"state": "screen_lock"}
+{"state": "screen_unlock", "locked_seconds": 1800}
 ```
 
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `CGEventSourceSecondsSinceLastEventType` | None |
+| Linux | `XScreenSaverQueryInfo` | None |
+| Windows | `GetLastInputInfo` | None |
+
 **Requirements:**
-1. Idle threshold MUST be configurable via `[daemon] idle_threshold` (default: 5m)
-2. Idle events MUST NOT fire during screen lock (lock/unlock are separate events)
-3. RSS impact MUST be < 1MB (polling, not hooks)
-4. macOS: use `CGEventSourceSecondsSinceLastEventType` (no Accessibility needed)
-5. Linux: use `XScreenSaverQueryInfo` via Xlib
-6. Windows: use `GetLastInputInfo` via syscall
+1. Idle threshold configurable via `[sources.idle] threshold = "5m"` (default: 5m)
+2. Screen lock detected via `CGSessionCopyCurrentDictionary` (macOS), `org.freedesktop.ScreenSaver` D-Bus (Linux), `WTSRegisterSessionNotification` (Windows)
+3. Idle events MUST NOT fire during screen lock (separate events)
+4. Poll interval: 5 seconds
 
-#### 1.2 Typing Velocity (`sources.TypingSource`)
+#### 1.2 Typing Velocity
 
-**Platform:** macOS (CGEventTap), Linux (libinput), Windows (low-level keyboard hook)
-
-**What it captures:** Keystrokes per minute, aggregated in 30-second windows. NOT individual keys — only the count.
+**What:** Keystrokes per minute aggregated in 30-second windows. Count only — never individual keys.
 
 **Event kind:** `typing`
 
-**Payload:**
+```json
+{"keys_per_minute": 85, "window_seconds": 30, "active_app": "GoLand"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `CGEventTapCreate` (kCGEventKeyDown) | Accessibility |
+| Linux | `/dev/input/event*` or `libinput` | Input group |
+| Windows | `SetWindowsHookEx(WH_KEYBOARD_LL)` | None |
+
+**Requirements:**
+5. Capture keystroke COUNT only — never key identifiers, sequences, or modifiers
+6. Aggregation window: 30 seconds minimum
+7. Opt-in: `[sources.typing] enabled = false` (default: disabled)
+8. Include frontmost app name at time of measurement
+
+#### 1.3 Mouse/Trackpad Activity
+
+**What:** Input density metrics — click rate, scroll velocity, cursor movement distance. Detects reading (scroll), searching (rapid clicks), and idle-but-present (cursor wiggle).
+
+**Event kind:** `pointer`
+
 ```json
 {
-  "keys_per_minute": 85,
   "window_seconds": 30,
-  "active_app": "GoLand"
+  "clicks": 4,
+  "scroll_distance": 2400,
+  "movement_pixels": 850,
+  "active_app": "Google Chrome",
+  "gesture": "none"
 }
 ```
 
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `CGEventTapCreate` (mouse events) | Accessibility |
+| Linux | `/dev/input/event*` | Input group |
+| Windows | `SetWindowsHookEx(WH_MOUSE_LL)` | None |
+
 **Requirements:**
-7. MUST capture keystroke COUNT only — never individual keys, sequences, or key identifiers
-8. Aggregation window MUST be at least 30 seconds (no per-keystroke events)
-9. macOS: requires Accessibility permission (shared with window title capture)
-10. Events MUST include the frontmost app name at time of measurement
-11. Source MUST be opt-in via `[sources.typing] enabled = true` (default: false)
-12. When disabled, the source MUST not install any event hooks
+9. Aggregate over 30-second windows (same as typing)
+10. Track: click count, scroll distance (pixels), cursor movement distance (pixels)
+11. macOS: detect trackpad gestures (swipe between desktops = context switch signal)
+12. Opt-in: `[sources.pointer] enabled = false` (default: disabled)
+13. Never capture click coordinates or targets — only aggregate counts and distances
 
-#### 1.3 Git Enrichment (enhance existing `sources.GitSource`)
+#### 1.4 Desktop/Space Switches
 
-**What's missing:** The git source detects commits, branch changes, and staging via fsnotify on `.git/` files, but captures no semantic content.
+**What:** Virtual desktop (Space) switches on macOS, workspace switches on Linux.
 
-**Enriched payloads:**
+**Event kind:** `desktop`
 
-On commit (`git_kind: "commit"`):
+```json
+{"action": "switch", "desktop_index": 2, "desktop_count": 4}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `NSWorkspace.activeSpaceDidChangeNotification` | None |
+| Linux/X11 | `_NET_CURRENT_DESKTOP` property change | None |
+| Linux/Wayland | Compositor IPC (Hyprland, Sway) | None |
+| Windows | `IVirtualDesktopManager` | None |
+
+**Requirements:**
+14. Emit on every desktop/space switch
+15. Include index and total count
+16. macOS: no special permissions needed (NSWorkspace notification)
+
+---
+
+### Part 2: System State Signals
+
+The environment the user is working in.
+
+#### 2.1 Display Configuration
+
+**What:** External monitor connect/disconnect, display count changes. Proxy for "at desk" vs "mobile."
+
+**Event kind:** `display`
+
+```json
+{"action": "connected", "display_count": 2, "primary_resolution": "2560x1440"}
+{"action": "disconnected", "display_count": 1, "primary_resolution": "1440x900"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `CGDisplayRegisterReconfigurationCallback` | None |
+| Linux | `xrandr --listmonitors` or D-Bus | None |
+| Windows | `WM_DISPLAYCHANGE` | None |
+
+**Requirements:**
+17. Emit on display connect/disconnect only (not continuous polling)
+18. Include display count and primary resolution
+19. Never capture display content or screenshots
+
+#### 2.2 Audio State
+
+**What:** Headphones connected/disconnected, microphone active. Proxy for focus mode (headphones) and calls (mic active).
+
+**Event kind:** `audio`
+
+```json
+{"action": "headphones_connected", "output_device": "AirPods Pro"}
+{"action": "headphones_disconnected"}
+{"action": "mic_active", "app": "zoom.us"}
+{"action": "mic_inactive"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `AVAudioSession` / CoreAudio notifications | None |
+| Linux | PulseAudio/PipeWire events | None |
+| Windows | `IMMNotificationClient` | None |
+
+**Requirements:**
+20. Detect audio output device changes (headphones on/off)
+21. Detect microphone activation (call in progress signal)
+22. Include device name for output changes
+23. Include process name using the microphone (if available)
+
+#### 2.3 Power State
+
+**What:** Plugged in vs battery, charge level. Proxy for mobile vs desk, and urgency context.
+
+**Event kind:** `power`
+
+```json
+{"action": "ac_connected"}
+{"action": "ac_disconnected", "battery_percent": 72}
+{"action": "low_battery", "battery_percent": 15}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `IOPSNotificationCreateRunLoopSource` | None |
+| Linux | `/sys/class/power_supply/` or UPower D-Bus | None |
+| Windows | `SYSTEM_POWER_STATUS` | None |
+
+**Requirements:**
+24. Emit on AC connect/disconnect
+25. Emit at 20% and 10% battery thresholds
+26. Poll interval: 60 seconds (battery level doesn't change fast)
+
+#### 2.4 Network State
+
+**What:** Connection type changes. Proxy for work (ethernet/VPN) vs home (WiFi) vs travel (tethering).
+
+**Event kind:** `network`
+
+```json
+{"action": "connected", "type": "wifi", "ssid_hash": "a3f8..."}
+{"action": "vpn_connected", "vpn_name": "Corporate VPN"}
+{"action": "disconnected"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `NWPathMonitor` or SystemConfiguration | None |
+| Linux | NetworkManager D-Bus | None |
+| Windows | `NotifyIpInterfaceChange` | None |
+
+**Requirements:**
+27. Detect WiFi/ethernet/cellular transitions
+28. Detect VPN connect/disconnect
+29. Store SSID as a hash (privacy — can distinguish "home" vs "office" without storing the name)
+30. VPN name is stored (not sensitive — it's a corporate tool name)
+
+#### 2.5 Focus Mode / Do Not Disturb
+
+**What:** OS-level Focus/DND state. Proxy for intentional deep work periods.
+
+**Event kind:** `focus_mode`
+
+```json
+{"action": "enabled", "mode": "Do Not Disturb"}
+{"action": "disabled"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `DNDNotificationCenter` / defaults read | None |
+| Linux | N/A (no OS-level DND) | N/A |
+| Windows | Focus Assist via WMI | None |
+
+**Requirements:**
+31. Detect Focus mode enable/disable
+32. Include mode name if available (macOS: "Work", "Personal", "Do Not Disturb")
+33. Linux: skip (no standard OS-level DND mechanism)
+
+---
+
+### Part 3: Application Lifecycle
+
+#### 3.1 App Launch/Quit
+
+**What:** Full application lifecycle, not just focus changes. Know when apps start and stop.
+
+**Event kind:** `app_lifecycle`
+
+```json
+{"action": "launch", "app": "Slack", "pid": 12345}
+{"action": "quit", "app": "Slack", "pid": 12345, "duration_seconds": 28800}
+{"action": "crash", "app": "Xcode", "pid": 54321}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | `NSWorkspace.didLaunchApplicationNotification` / `didTerminateApplicationNotification` | None |
+| Linux | Process polling (existing ProcessSource) | None |
+| Windows | WMI `Win32_ProcessStartTrace` | None |
+
+**Requirements:**
+34. Emit on app launch and quit
+35. Track duration (quit timestamp - launch timestamp)
+36. Detect crashes (abnormal termination) separately from normal quit
+37. Filter to GUI apps only — skip background daemons and system processes
+
+#### 3.2 Screenshot Capture
+
+**What:** Screenshot taken. Proxy for documentation, bug reporting, sharing.
+
+**Event kind:** `screenshot`
+
+```json
+{"action": "captured", "type": "region"}
+```
+
+**Platform APIs:**
+| Platform | API | Permission |
+|----------|-----|------------|
+| macOS | Watch `~/Desktop/Screenshot*` or `NSMetadataQuery` for screenshot files | None |
+| Linux | Watch screenshot directory | None |
+| Windows | Watch clipboard for image + Screenshot folder | None |
+
+**Requirements:**
+38. Detect when a screenshot is captured
+39. Distinguish: full screen, region, window (if detectable)
+40. Never capture or store the screenshot content
+
+#### 3.3 Download Activity
+
+**What:** Files appearing in the Downloads folder. Proxy for resource gathering.
+
+**Event kind:** `download`
+
+```json
+{"action": "completed", "extension": ".pdf", "size_bytes": 2400000}
+```
+
+**Platform APIs:** Filesystem watcher on the Downloads directory (same as existing FileSource).
+
+**Requirements:**
+41. Watch the user's Downloads directory for new files
+42. Capture file extension and size — NOT filename (privacy)
+43. Debounce: one event per file, not per write chunk
+
+---
+
+### Part 4: Enrichment of Existing Sources
+
+#### 4.1 Git Enrichment
+
+Enhance existing `sources.GitSource` events.
+
+On commit:
 ```json
 {
   "git_kind": "commit",
@@ -115,27 +357,25 @@ On commit (`git_kind: "commit"`):
 }
 ```
 
-On branch change (`git_kind: "head_change"`):
+On branch change:
 ```json
 {
   "git_kind": "head_change",
-  "repo_root": "/Users/alec/sigil",
   "branch": "main",
   "previous_branch": "feat/desktop-polish"
 }
 ```
 
 **Requirements:**
-13. On COMMIT_EDITMSG write, read `git log -1 --format='%H|%s'` and `git diff --stat HEAD~1..HEAD` to populate message, hash, files_changed, insertions, deletions
-14. On HEAD change, read `.git/HEAD` to determine current branch, diff against previous to populate previous_branch
-15. Git commands MUST have a 2-second timeout to avoid blocking on network operations
-16. Commit message truncated to 200 characters (privacy: no full commit bodies)
+44. On commit: read `git log -1` for message/hash, `git diff --stat HEAD~1` for stats
+45. On HEAD change: read `.git/HEAD` for branch, diff against previous
+46. Git commands timeout after 2 seconds
+47. Commit message truncated to 200 characters
 
-#### 1.4 File Metadata Enrichment (enhance existing `sources.FileSource`)
+#### 4.2 File Metadata Enrichment
 
-**What's missing:** File events have path and operation but no metadata about the file itself.
+Enhance existing `sources.FileSource` events.
 
-**Enriched payload:**
 ```json
 {
   "op": "WRITE",
@@ -149,246 +389,173 @@ On branch change (`git_kind: "head_change"`):
 ```
 
 **Requirements:**
-17. Add `extension`, `language` (derived from extension), `is_test`, `is_config` fields to every file event
-18. Language mapping covers at minimum: go, python, typescript, javascript, rust, java, c, cpp, ruby, swift, kotlin, sql, yaml, toml, json, markdown, html, css
-19. `is_test` true when filename matches `*_test.go`, `*.test.ts`, `*.spec.js`, `test_*.py`, etc.
-20. `is_config` true when filename matches `*.toml`, `*.yaml`, `*.yml`, `*.json`, `*.env`, `Makefile`, `Dockerfile`, etc.
-21. `size_bytes` read via `os.Stat` — MUST NOT block; skip on error
-22. MUST NOT add latency to the file event pipeline; enrichment is best-effort
+48. Add extension, language, is_test, is_config, size_bytes to every file event
+49. Language mapping for 20+ languages
+50. `is_test` / `is_config` from filename patterns
+51. `size_bytes` via `os.Stat` — best-effort, skip on error
 
 ---
 
-### Part 2: Browser Extension
+### Part 5: Calendar Integration
 
-A lightweight browser extension that sends page focus events to sigild. The user installs it from the Chrome Web Store / Firefox Add-ons / Safari Extensions.
-
-#### 2.1 What the Extension Captures
-
-- Page title (what's shown in the tab bar)
-- Domain (e.g. `github.com`, `docs.google.com`, `stackoverflow.com`)
-- Tab count (total open tabs in all windows)
-- Active tab transitions (user switches tabs)
-
-**What it does NOT capture:**
-- Full URLs (privacy — domain only)
-- Page content
-- Form inputs
-- Network requests
-- Browsing history beyond the current session
-
-#### 2.2 Event Schema
-
-**Event kind:** `browser`
-
-```json
-{
-  "action": "focus|blur|tab_count",
-  "domain": "github.com",
-  "page_title": "sigil-tech/sigil: Pull request #76",
-  "tab_count": 23,
-  "browser": "chrome"
-}
-```
-
-**Requirements:**
-23. Extension communicates with sigild via HTTP POST to `http://127.0.0.1:7775/ingest` (the existing plugin ingest endpoint)
-24. Extension MUST send domain only, never full URL paths or query parameters
-25. Tab count events fire at most once per minute
-26. Focus events fire on tab switch, not on every page load
-27. Extension MUST work offline (if sigild is not running, events are dropped silently)
-28. Extension MUST have a visible indicator showing it's connected to Sigil
-29. Domain allowlist/blocklist configurable in extension settings (e.g., exclude `mail.google.com`)
-30. Extension source code MUST be open source and auditable
-
----
-
-### Part 3: Calendar Integration
-
-Read-only calendar access to understand meeting boundaries.
-
-#### 3.1 macOS EventKit (daemon-native)
+#### 5.1 macOS EventKit (daemon-native)
 
 **Event kind:** `calendar`
 
 ```json
 {
-  "action": "meeting_start|meeting_end|free_block",
+  "action": "meeting_start",
   "title": "Sprint Planning",
   "duration_minutes": 30,
   "attendee_count": 8,
-  "is_recurring": true,
-  "calendar_name": "Work"
+  "is_recurring": true
 }
 ```
 
 **Requirements:**
-31. Use macOS EventKit framework (requires Calendar permission prompt)
-32. Poll calendar every 5 minutes for upcoming events
-33. Emit `meeting_start` when a calendar event begins (±2 minute tolerance)
-34. Emit `meeting_end` when a calendar event ends
-35. Emit `free_block` when there's a gap of 30+ minutes between meetings
-36. Capture title, duration, attendee count, and recurrence — NOT attendee names or email addresses
-37. Filter to calendars the user selects (configurable via `[sources.calendar] calendars = ["Work"]`)
-
-#### 3.2 Google Calendar API (plugin)
-
-Same event schema as EventKit. Implemented as a Sigil plugin (`sigil-plugin-gcal`) that authenticates via OAuth and polls the Google Calendar API.
-
-**Requirements:**
-38. Plugin uses the existing plugin protocol (HTTP ingest to sigild)
-39. OAuth tokens stored locally, never transmitted to Sigil's servers
-40. Polling interval configurable (default: 5 minutes)
+52. Use EventKit framework (requires Calendar permission)
+53. Poll every 5 minutes for upcoming events
+54. Emit meeting_start/meeting_end/free_block events
+55. Capture title, duration, attendee count, recurrence — NOT attendee names
+56. Configurable calendar filter: `[sources.calendar] calendars = ["Work"]`
 
 ---
 
-### Part 4: Plugin-Based Third-Party Sources
-
-Each of these is a separate plugin binary, following the existing plugin pattern (`sigil-plugin-*`). They push events to sigild's ingest endpoint.
-
-#### 4.1 Communication Plugins
-
-**Slack (`sigil-plugin-slack`)**
-
-Event kind: `communication`
-
-```json
-{
-  "platform": "slack",
-  "action": "message_sent|message_received|channel_switch|dnd_on|dnd_off",
-  "channel_type": "dm|channel|thread",
-  "message_count": 1,
-  "is_response": true,
-  "response_time_seconds": 45
-}
-```
-
-**Requirements:**
-41. Capture message send/receive counts — NOT message content
-42. Track DND status transitions
-43. Track channel switches (context switching signal)
-44. `is_response` + `response_time_seconds` measures reactivity
-
-**Microsoft Teams (`sigil-plugin-teams`)**
-
-Same schema as Slack with `"platform": "teams"`.
-
-#### 4.2 Video Call Plugins
-
-**Zoom (`sigil-plugin-zoom`)**
-
-Event kind: `meeting`
-
-```json
-{
-  "platform": "zoom",
-  "action": "join|leave|mute|unmute|screen_share_start|screen_share_end",
-  "meeting_title": "Weekly Sync",
-  "duration_minutes": 45,
-  "participant_count": 12
-}
-```
-
-**Requirements:**
-45. Detect Zoom process start/stop for basic join/leave
-46. Zoom SDK or API for mute/unmute, screen share, participant count (Pro feature)
-47. Meeting title from Zoom API — NOT from screen scraping
-48. Duration computed from join to leave timestamps
-
-**Google Meet / FaceTime / WebEx**
-
-Same event schema. Meet can be detected via browser extension (domain `meet.google.com`). FaceTime via process detection.
-
-#### 4.3 Document Plugins
-
-**Google Docs (`sigil-plugin-gdocs`)**
-
-Event kind: `document`
-
-```json
-{
-  "platform": "google_docs",
-  "action": "open|edit|close",
-  "document_title": "Q4 Product Roadmap",
-  "document_type": "document|spreadsheet|presentation",
-  "time_in_doc_seconds": 600
-}
-```
-
-**Requirements:**
-49. Use Google Drive API to detect recently modified documents
-50. Capture document title and type — NOT content
-51. `time_in_doc_seconds` estimated from browser focus events on `docs.google.com` domain
-
-**Notion (`sigil-plugin-notion`)**
-
-Same event schema with `"platform": "notion"`.
-
-**Requirements:**
-52. Use Notion API for page access/modification times
-53. Capture page title only — NOT page content or blocks
-
----
-
-### Part 5: New Event Kinds
+### Part 6: New Event Kinds
 
 Add to `internal/event/event.go`:
 
 ```go
-KindIdle          Kind = "idle"          // idle/active transitions
-KindTyping        Kind = "typing"        // typing velocity measurements
-KindBrowser       Kind = "browser"       // browser tab focus/domain
-KindCalendar      Kind = "calendar"      // meeting start/end/free blocks
-KindCommunication Kind = "communication" // Slack/Teams message patterns
-KindMeeting       Kind = "meeting"       // video call lifecycle
-KindDocument      Kind = "document"      // document editing lifecycle
+KindIdle        Kind = "idle"          // active/idle/lock transitions
+KindTyping      Kind = "typing"        // keystroke rate (not keys)
+KindPointer     Kind = "pointer"       // mouse/trackpad aggregate metrics
+KindDesktop     Kind = "desktop"       // virtual desktop switches
+KindDisplay     Kind = "display"       // monitor connect/disconnect
+KindAudio       Kind = "audio"         // headphones/mic state
+KindPower       Kind = "power"         // AC/battery transitions
+KindNetwork     Kind = "network"       // connection type changes
+KindFocusMode   Kind = "focus_mode"    // OS DND/Focus state
+KindAppLifecycle Kind = "app_lifecycle" // app launch/quit/crash
+KindScreenshot  Kind = "screenshot"    // screenshot captured
+KindDownload    Kind = "download"      // file downloaded
+KindCalendar    Kind = "calendar"      // meeting boundaries
+KindBrowser     Kind = "browser"       // browser context (specs 024/025)
 ```
 
 ---
 
-## Privacy Considerations
+## Privacy Model
 
-All new sources follow the existing privacy model:
+| Signal | What's captured | What's NOT captured |
+|--------|----------------|-------------------|
+| Typing | Keystrokes per minute (count) | Individual keys, sequences, content |
+| Pointer | Click count, scroll distance, movement | Click targets, coordinates |
+| Audio | Device name, mic active state | Audio content, call audio |
+| Network | Connection type, SSID hash | SSID name, IP addresses, traffic |
+| Download | File extension, size | Filename, content |
+| Calendar | Title, duration, attendee count | Attendee names, meeting notes |
+| Screenshot | Timestamp, capture type | Image content |
+| Git | Commit message (truncated), stats | Full diff, file contents |
 
-1. **Everything stays local.** No new data leaves the machine unless the user opts into cloud inference or fleet reporting.
-2. **Metadata, not content.** Browser captures domain + title, not URLs or page content. Slack captures message counts, not message text. Documents capture titles, not contents.
-3. **Opt-in by default.** Typing velocity requires explicit `enabled = true`. Browser extension is a separate install. Calendar requires permission prompt. Plugins are separate installs.
-4. **Kill switch works.** `sigilctl purge` and the Insights view purge ALL event kinds including the new ones.
-5. **Retention applies.** The existing `raw_event_days` retention policy applies to all new event kinds equally.
-6. **Domain blocklist.** Browser extension allows users to exclude domains they don't want tracked.
+All sources:
+- Default to **enabled** for non-intrusive signals (idle, display, power, network, app lifecycle)
+- Default to **disabled** for input monitoring (typing, pointer)
+- Respect `sigilctl purge` kill switch
+- Respect `raw_event_days` retention policy
+- Data never leaves the machine unless user opts into cloud
+
+---
+
+## Configuration
+
+```toml
+[sources.idle]
+enabled = true          # default: true
+threshold = "5m"        # time before idle_start fires
+
+[sources.typing]
+enabled = false         # default: false (requires Accessibility on macOS)
+
+[sources.pointer]
+enabled = false         # default: false (requires Accessibility on macOS)
+
+[sources.desktop]
+enabled = true          # default: true
+
+[sources.display]
+enabled = true          # default: true
+
+[sources.audio]
+enabled = true          # default: true
+
+[sources.power]
+enabled = true          # default: true
+
+[sources.network]
+enabled = true          # default: true
+hash_ssid = true        # default: true (store hash instead of name)
+
+[sources.focus_mode]
+enabled = true          # default: true
+
+[sources.app_lifecycle]
+enabled = true          # default: true
+gui_only = true         # default: true (skip background processes)
+
+[sources.screenshot]
+enabled = true          # default: true
+
+[sources.download]
+enabled = true          # default: true
+watch_dir = "~/Downloads"
+
+[sources.calendar]
+enabled = false         # default: false (requires Calendar permission)
+calendars = ["Work"]    # which calendars to read
+
+[sources.browser]
+enabled = true          # default: true
+blocked_domains = []
+poll_interval = "2s"
+```
 
 ---
 
 ## Success Criteria
 
-57. After implementing Part 1, sigild captures idle transitions, typing velocity, git commit messages/branches/diff stats, and file language/test/config classification — verified by `sigilctl events` showing populated payloads.
-58. After implementing Part 2, the browser extension pushes domain + title events to sigild at tab-switch granularity — verified by `sigilctl events --kind browser` showing recent tab switches.
-59. After implementing Part 3, sigild emits meeting_start/meeting_end events aligned with the user's actual calendar — verified against known meeting times.
-60. After implementing Part 4, at least one communication plugin (Slack) and one video call plugin (Zoom) push events to sigild — verified by event counts in the store.
-61. The ML pipeline (sigil-ml) can train a model that predicts "focus score" (0-100) for each hour based on the enriched signals — verified by prediction accuracy > 60% on held-out data.
-62. Total RSS increase from Part 1 sources MUST be < 5MB.
-63. Idle detection latency MUST be < 1 second (time between actual input resume and `idle:end` event).
-64. File enrichment MUST NOT increase file event processing time by more than 1ms per event.
-65. Browser extension MUST consume < 10MB memory in Chrome.
+57. Idle detection fires within 1 second of input resume
+58. Display connect/disconnect events match actual monitor changes
+59. Power events match AC plug/unplug
+60. Audio events match headphone connect/disconnect
+61. App lifecycle captures launch/quit for GUI apps
+62. Git enrichment populates commit message and branch for every commit event
+63. File enrichment populates language and is_test for every file event
+64. Total RSS increase from all Part 1-4 sources < 8MB
+65. All sources configurable via `[sources.*]` TOML sections
+66. `sigilctl purge` removes all new event kinds
+67. ML focus-score prediction accuracy > 60% on 7-day training data with enriched signals
 
 ---
 
 ## Implementation Priority
 
-| Priority | Part | Source | Native/Plugin | Effort |
-|----------|------|--------|--------------|--------|
-| P0 | 1.1 | Idle detection | Native | 2 days |
-| P0 | 1.3 | Git enrichment | Native | 1 day |
-| P0 | 1.4 | File metadata | Native | 0.5 days |
-| P1 | 2 | Browser extension | Extension | 3-5 days |
-| P1 | 3.1 | Calendar (EventKit) | Native | 2 days |
-| P1 | 1.2 | Typing velocity | Native | 2 days |
-| P2 | 4.1 | Slack plugin | Plugin | 2-3 days |
-| P2 | 4.2 | Zoom plugin | Plugin | 2-3 days |
-| P2 | 3.2 | Calendar (Google) | Plugin | 2-3 days |
-| P3 | 4.3 | Google Docs plugin | Plugin | 2-3 days |
-| P3 | 4.3 | Notion plugin | Plugin | 2-3 days |
-| P3 | 4.1 | Teams plugin | Plugin | 2-3 days |
+| Priority | Source | What it unlocks for ML | Effort |
+|----------|--------|----------------------|--------|
+| P0 | Idle detection | Accurate time-on-task, break detection | 2 days |
+| P0 | Git enrichment | Commit context, branch awareness | 1 day |
+| P0 | File metadata | Language distribution, test frequency | 0.5 days |
+| P0 | App lifecycle | App usage duration, daily patterns | 1 day |
+| P1 | Display config | Location proxy (home/office/travel) | 0.5 days |
+| P1 | Audio state | Focus proxy (headphones), call detection | 1 day |
+| P1 | Power state | Location/mobility proxy | 0.5 days |
+| P1 | Network state | Location/context proxy (VPN = work) | 0.5 days |
+| P1 | Desktop switches | Context-switch frequency | 0.5 days |
+| P1 | Focus mode | Intentional deep-work detection | 0.5 days |
+| P1 | Calendar (EventKit) | Meeting load, free-block prediction | 2 days |
+| P2 | Typing velocity | Flow state detection | 2 days |
+| P2 | Pointer activity | Reading vs searching behavior | 1 day |
+| P2 | Screenshot | Documentation/reporting activity | 0.5 days |
+| P2 | Download activity | Resource gathering patterns | 0.5 days |
+| **Total** | | | **~14 days** |
 
-**Total: ~25-35 days across all priorities.**
-
-P0 (idle + git + file enrichment) can ship in 3-4 days and immediately improves ML signal density by ~3x.
+P0 (idle + git + file + app lifecycle) ships in 4-5 days and provides the foundation for all ML models.
