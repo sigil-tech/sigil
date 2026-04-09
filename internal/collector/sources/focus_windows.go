@@ -99,6 +99,28 @@ func getWindowTitle(hwnd uintptr) string {
 	return syscall.UTF16ToString(buf)
 }
 
+// frontApp returns the executable name of the foreground window's process.
+// This is the Windows equivalent of the macOS frontApp() function used by
+// browser_source.go.
+func frontApp() string {
+	hwnd, _, _ := getForegroundWindow.Call()
+	if hwnd == 0 {
+		return ""
+	}
+	return getProcessName(hwnd)
+}
+
+// windowTitle returns the title of the given application's foreground window.
+// On Windows we find the foreground window title directly since app is the
+// process name of the already-focused window.
+func windowTitle(_ string) string {
+	hwnd, _, _ := getForegroundWindow.Call()
+	if hwnd == 0 {
+		return ""
+	}
+	return getWindowTitle(hwnd)
+}
+
 func getProcessName(hwnd uintptr) string {
 	var pid uint32
 	getWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))

@@ -121,9 +121,12 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 				// Auto-watch newly created directories so we pick up
 				// files in dirs created after startup.
 				if fe.Op&fsnotify.Create != 0 && !s.shouldIgnore(fe.Name) {
-					// Best-effort: if it's a directory, add it.
-					// Ignore errors (might be a file, or already watched).
-					_ = w.Add(fe.Name)
+					// Best-effort: watch new directories for file events.
+					// Errors are expected (target might be a file, or
+					// the watcher limit is reached) and are non-fatal.
+					if addErr := w.Add(fe.Name); addErr != nil {
+						// Expected — skip silently.
+					}
 				}
 
 				// Skip events for ignored paths.
@@ -140,6 +143,7 @@ func (s *FileSource) Events(ctx context.Context) (<-chan event.Event, error) {
 					},
 					Timestamp: time.Now(),
 				}
+				EnrichFileEvent(&e)
 				select {
 				case ch <- e:
 				case <-ctx.Done():

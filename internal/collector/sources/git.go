@@ -36,8 +36,7 @@ func (s *GitSource) Events(ctx context.Context) (<-chan event.Event, error) {
 			continue // not a git repo or .git not accessible
 		}
 		if err := w.Add(gitDir); err != nil {
-			// Non-fatal: log via the event channel below.
-			_ = err
+			continue // non-fatal: skip repos we can't watch
 		}
 	}
 
@@ -60,6 +59,7 @@ func (s *GitSource) Events(ctx context.Context) (<-chan event.Event, error) {
 				if !ok {
 					continue // not interesting
 				}
+				enrichGitEvent(&e)
 				select {
 				case ch <- e:
 				case <-ctx.Done():
