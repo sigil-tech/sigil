@@ -322,6 +322,28 @@ export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => voi
           </div>
           <div class="settings-row">
             <div class="settings-label-group">
+              <span class="settings-label">Collection Frequency</span>
+              <div class="settings-label-sub">
+                How often Sigil samples your activity
+              </div>
+            </div>
+            <select
+              class="settings-select"
+              value={(config.sources && config.sources.frequency) || "medium"}
+              onChange={(e) =>
+                update(
+                  "sources.frequency",
+                  (e.target as HTMLSelectElement).value
+                )
+              }
+            >
+              <option value="low">Low — minimal CPU</option>
+              <option value="medium">Medium — balanced</option>
+              <option value="high">High — most data</option>
+            </select>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label-group">
               <span class="settings-label">Watch Directories</span>
               <div class="settings-label-sub">
                 Sigil observes these paths for file edits and git activity
