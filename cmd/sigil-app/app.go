@@ -15,8 +15,8 @@ import (
 	"time"
 
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
-	siglogging "github.com/wambozi/sigil/internal/logging"
-	"github.com/wambozi/sigil/internal/socket"
+	siglogging "github.com/sigil-tech/sigil/internal/logging"
+	"github.com/sigil-tech/sigil/internal/socket"
 )
 
 // App is the Wails-bound backend. It communicates with sigild over the Unix

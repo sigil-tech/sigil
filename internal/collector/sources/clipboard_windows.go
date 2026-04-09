@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 var (

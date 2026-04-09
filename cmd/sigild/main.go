@@ -32,25 +32,25 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 
-	"github.com/wambozi/sigil/internal/actuator"
-	"github.com/wambozi/sigil/internal/analyzer"
-	"github.com/wambozi/sigil/internal/collector"
-	"github.com/wambozi/sigil/internal/collector/sources"
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/fleet"
-	"github.com/wambozi/sigil/internal/inference"
-	"github.com/wambozi/sigil/internal/mcp"
-	"github.com/wambozi/sigil/internal/ml"
 	"net/http"
 
-	siglogging "github.com/wambozi/sigil/internal/logging"
-	"github.com/wambozi/sigil/internal/network"
-	"github.com/wambozi/sigil/internal/notifier"
-	"github.com/wambozi/sigil/internal/plugin"
-	"github.com/wambozi/sigil/internal/socket"
-	"github.com/wambozi/sigil/internal/store"
-	"github.com/wambozi/sigil/internal/task"
+	"github.com/sigil-tech/sigil/internal/actuator"
+	"github.com/sigil-tech/sigil/internal/analyzer"
+	"github.com/sigil-tech/sigil/internal/collector"
+	"github.com/sigil-tech/sigil/internal/collector/sources"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/inference"
+	siglogging "github.com/sigil-tech/sigil/internal/logging"
+	"github.com/sigil-tech/sigil/internal/mcp"
+	"github.com/sigil-tech/sigil/internal/ml"
+	"github.com/sigil-tech/sigil/internal/network"
+	"github.com/sigil-tech/sigil/internal/notifier"
+	"github.com/sigil-tech/sigil/internal/plugin"
+	signsync "github.com/sigil-tech/sigil/internal/sync"
+	"github.com/sigil-tech/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/task"
 )
 
 func main() {
@@ -457,14 +457,31 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	log.Info("actuator registry started")
 
-	// --- Fleet Reporter -----------------------------------------------------
-	var fleetReporter *fleet.Reporter
-	if cfg.fileCfg.Fleet.Enabled {
-		fleetReporter = fleet.New(db, cfg.fileCfg.Fleet, log)
-		go fleetReporter.Run(ctx)
-		log.Info("fleet reporter started", "endpoint", cfg.fileCfg.Fleet.Endpoint)
+	// --- Fleet ---------------------------------------------------------------
+	// Fleet is now a cloud service (sigil-tech/sigil-fleet). The daemon
+	// no longer imports it as a Go library. Fleet handlers return the
+	// configured endpoint so clients can interact with it directly.
+	registerFleetHandlers(srv, cfg)
+
+	// --- Sync Agent ---------------------------------------------------------
+	var syncAgent *signsync.Agent
+	if cfg.fileCfg.Sync.Enabled {
+		syncInterval := 5 * time.Second
+		if cfg.fileCfg.Sync.Interval != "" {
+			if d, err := time.ParseDuration(cfg.fileCfg.Sync.Interval); err == nil && d > 0 {
+				syncInterval = d
+			}
+		}
+		syncAgent = signsync.New(db, db, signsync.Config{
+			APIURL:       cfg.fileCfg.Sync.APIURL,
+			APIKey:       cfg.fileCfg.Sync.APIKey,
+			BatchSize:    cfg.fileCfg.Sync.Batch,
+			PollInterval: syncInterval,
+		}, log)
+		go syncAgent.Run(ctx)
+		log.Info("sync agent started", "api_url", cfg.fileCfg.Sync.APIURL)
 	}
-	registerFleetHandlers(srv, fleetReporter)
+	registerSyncHandlers(srv, syncAgent)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -2259,34 +2276,55 @@ func generateToken() (string, error) {
 
 // --- Fleet socket handlers --------------------------------------------------
 
-func registerFleetHandlers(srv *socket.Server, reporter *fleet.Reporter) {
-	srv.Handle("fleet-preview", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
+func registerFleetHandlers(srv *socket.Server, cfg daemonConfig) {
+	srv.Handle("fleet-preview", func(_ context.Context, _ socket.Request) socket.Response {
+		if !cfg.fileCfg.Fleet.Enabled {
+			return socket.Response{Error: "fleet is not enabled"}
 		}
-		report, err := reporter.Preview(ctx)
-		if err != nil {
-			return socket.Response{Error: fmt.Sprintf("fleet preview: %s", err)}
-		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(report)}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"endpoint": cfg.fileCfg.Fleet.Endpoint,
+			"enabled":  true,
+		})}
 	})
 
-	srv.Handle("fleet-opt-out", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
-		}
-		reporter.OptOut()
+	srv.Handle("fleet-opt-out", func(_ context.Context, _ socket.Request) socket.Response {
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
 
-	srv.Handle("fleet-policy", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
+	srv.Handle("fleet-policy", func(_ context.Context, _ socket.Request) socket.Response {
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
+	})
+}
+
+// --- Sync socket handlers ---------------------------------------------------
+
+func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
+	srv.Handle("sync-status", func(ctx context.Context, _ socket.Request) socket.Response {
+		if agent == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"enabled": false,
+			})}
 		}
-		policy := reporter.CurrentPolicy()
-		if policy == nil {
-			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
+		status, err := agent.Status(ctx)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("sync status: %s", err)}
 		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(policy)}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(status)}
+	})
+
+	srv.Handle("sync-pause", func(_ context.Context, _ socket.Request) socket.Response {
+		if agent == nil {
+			return socket.Response{Error: "sync agent is not enabled"}
+		}
+		agent.Pause()
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"paused": true})}
+	})
+
+	srv.Handle("sync-resume", func(_ context.Context, _ socket.Request) socket.Response {
+		if agent == nil {
+			return socket.Response{Error: "sync agent is not enabled"}
+		}
+		agent.Resume()
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"paused": false})}
 	})
 }

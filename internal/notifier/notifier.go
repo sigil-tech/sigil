@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // SuggestionStore is the subset of store operations the notifier needs.

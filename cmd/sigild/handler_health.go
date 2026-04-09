@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/socket"
 )
 
 // serviceHealth describes the health of a single backend service.

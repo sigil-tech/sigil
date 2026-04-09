@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/socket"
 )
 
 // registerNotificationHandlers adds DND and category mute socket methods.

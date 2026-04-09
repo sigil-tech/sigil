@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/socket"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // registerAnalyticsHandlers adds the analytics and export-suggestions socket methods.

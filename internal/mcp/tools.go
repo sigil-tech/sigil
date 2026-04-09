@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/plugin"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/plugin"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // StoreReader is the read interface consumed by the MCP tool implementations.

@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/store"
-	storemocks "github.com/wambozi/sigil/internal/store/mocks"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/store"
+	storemocks "github.com/sigil-tech/sigil/internal/store/mocks"
 )
 
 // ---------------------------------------------------------------------------

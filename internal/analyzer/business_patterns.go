@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/notifier"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/notifier"
 )
 
 // --- Business workflow pattern constants ------------------------------------

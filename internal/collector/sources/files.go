@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // FileSource watches a list of directory trees for file-system events using

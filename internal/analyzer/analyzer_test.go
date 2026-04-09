@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
-	"github.com/wambozi/sigil/internal/inference"
-	"github.com/wambozi/sigil/internal/notifier"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/notifier"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 // --- helpers ---------------------------------------------------------------

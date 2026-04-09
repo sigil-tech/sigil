@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wambozi/sigil/internal/socket"
+	"github.com/sigil-tech/sigil/internal/socket"
 )
 
 // responseCache is a simple TTL cache for socket responses.

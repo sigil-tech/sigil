@@ -5,10 +5,10 @@ package mocks
 import (
 	context "context"
 
+	event "github.com/sigil-tech/sigil/internal/event"
 	mock "github.com/stretchr/testify/mock"
-	event "github.com/wambozi/sigil/internal/event"
 
-	store "github.com/wambozi/sigil/internal/store"
+	store "github.com/sigil-tech/sigil/internal/store"
 
 	time "time"
 )

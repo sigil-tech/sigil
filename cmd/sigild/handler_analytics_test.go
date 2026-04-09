@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/wambozi/sigil/internal/store"
+	"github.com/sigil-tech/sigil/internal/store"
 )
 
 func TestComputeStreak(t *testing.T) {

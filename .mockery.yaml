@@ -2,7 +2,7 @@ with-expecter: false
 mockname: "Mock{{.InterfaceName}}"
 outpkg: "mocks"
 packages:
-  github.com/wambozi/sigil/internal/store:
+  github.com/sigil-tech/sigil/internal/store:
     interfaces:
       EventReader:
         config:
@@ -13,17 +13,17 @@ packages:
       ReadWriter:
         config:
           dir: "internal/store/mocks"
-  github.com/wambozi/sigil/internal/inference:
+  github.com/sigil-tech/sigil/internal/inference:
     interfaces:
       Backend:
         config:
           dir: "internal/inference/mocks"
-  github.com/wambozi/sigil/internal/collector:
+  github.com/sigil-tech/sigil/internal/collector:
     interfaces:
       Source:
         config:
           dir: "internal/collector/mocks"
-  github.com/wambozi/sigil/internal/notifier:
+  github.com/sigil-tech/sigil/internal/notifier:
     interfaces:
       Platform:
         config:

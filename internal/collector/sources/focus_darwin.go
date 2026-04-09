@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // DarwinFocusSource polls the macOS front-app API via lsappinfo and emits

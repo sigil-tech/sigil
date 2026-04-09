@@ -11,10 +11,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/wambozi/sigil/internal/assets"
-	"github.com/wambozi/sigil/internal/config"
-	"github.com/wambozi/sigil/internal/inference"
-	"github.com/wambozi/sigil/internal/plugin"
+	"github.com/sigil-tech/sigil/internal/assets"
+	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/plugin"
 )
 
 // nonInteractive controls whether init skips all prompts and uses safe defaults.

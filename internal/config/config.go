@@ -34,6 +34,16 @@ type Config struct {
 	Network   NetworkConfig           `toml:"network" json:"network"`
 	Cloud     CloudConfig             `toml:"cloud" json:"cloud"`
 	CloudSync CloudSyncConfig         `toml:"cloud_sync" json:"cloud_sync"`
+	Sync      SyncConfig              `toml:"sync" json:"sync"`
+}
+
+// SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.
+type SyncConfig struct {
+	Enabled  bool   `toml:"enabled" json:"enabled"`
+	APIURL   string `toml:"api_url" json:"api_url"`
+	APIKey   string `toml:"api_key" json:"api_key"`
+	Interval string `toml:"interval" json:"interval"`
+	Batch    int    `toml:"batch_size" json:"batch_size"`
 }
 
 // PluginConfig defines a single plugin's configuration.
@@ -384,6 +394,23 @@ func merge(dst, src *Config) {
 	}
 	if len(src.Network.AllowedCredentials) > 0 {
 		dst.Network.AllowedCredentials = src.Network.AllowedCredentials
+	}
+
+	// Sync
+	if src.Sync.Enabled {
+		dst.Sync.Enabled = true
+	}
+	if src.Sync.APIURL != "" {
+		dst.Sync.APIURL = src.Sync.APIURL
+	}
+	if src.Sync.APIKey != "" {
+		dst.Sync.APIKey = src.Sync.APIKey
+	}
+	if src.Sync.Interval != "" {
+		dst.Sync.Interval = src.Sync.Interval
+	}
+	if src.Sync.Batch != 0 {
+		dst.Sync.Batch = src.Sync.Batch
 	}
 
 	// Plugins (map — just replace entirely if set in file)

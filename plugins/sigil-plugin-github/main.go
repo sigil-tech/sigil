@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wambozi/sigil/plugins/internal/pluginutil"
+	"github.com/sigil-tech/sigil/plugins/internal/pluginutil"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // processSession tracks a running process from first-seen to exit.

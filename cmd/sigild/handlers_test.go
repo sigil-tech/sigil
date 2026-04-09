@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigil-tech/sigil/internal/event"
 	"github.com/stretchr/testify/assert"
-	"github.com/wambozi/sigil/internal/event"
 )
 
 func TestSummarizeEvent(t *testing.T) {

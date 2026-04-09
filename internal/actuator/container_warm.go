@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wambozi/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/event"
 )
 
 // TerminalQuerier is the subset of the store needed to query terminal events.
