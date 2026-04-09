@@ -34,7 +34,6 @@ import (
 
 	"net/http"
 
-	fleet "github.com/sigil-tech/sigil-fleet"
 	"github.com/sigil-tech/sigil/internal/actuator"
 	"github.com/sigil-tech/sigil/internal/analyzer"
 	"github.com/sigil-tech/sigil/internal/collector"
@@ -446,25 +445,11 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	log.Info("actuator registry started")
 
-	// --- Fleet Reporter -----------------------------------------------------
-	var fleetReporter *fleet.Reporter
-	if cfg.fileCfg.Fleet.Enabled {
-		fleetInterval := time.Hour
-		if cfg.fileCfg.Fleet.Interval != "" {
-			if d, err := time.ParseDuration(cfg.fileCfg.Fleet.Interval); err == nil && d > 0 {
-				fleetInterval = d
-			}
-		}
-		fleetReporter = fleet.New(newFleetStore(db), fleet.Config{
-			Enabled:  cfg.fileCfg.Fleet.Enabled,
-			Endpoint: cfg.fileCfg.Fleet.Endpoint,
-			Interval: fleetInterval,
-			NodeID:   cfg.fileCfg.Fleet.NodeID,
-		}, log)
-		go fleetReporter.Run(ctx)
-		log.Info("fleet reporter started", "endpoint", cfg.fileCfg.Fleet.Endpoint)
-	}
-	registerFleetHandlers(srv, fleetReporter)
+	// --- Fleet ---------------------------------------------------------------
+	// Fleet is now a cloud service (sigil-tech/sigil-fleet). The daemon
+	// no longer imports it as a Go library. Fleet handlers return the
+	// configured endpoint so clients can interact with it directly.
+	registerFleetHandlers(srv, cfg)
 
 	// --- Sync Agent ---------------------------------------------------------
 	var syncAgent *signsync.Agent
@@ -2279,35 +2264,23 @@ func generateToken() (string, error) {
 
 // --- Fleet socket handlers --------------------------------------------------
 
-func registerFleetHandlers(srv *socket.Server, reporter *fleet.Reporter) {
-	srv.Handle("fleet-preview", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
+func registerFleetHandlers(srv *socket.Server, cfg daemonConfig) {
+	srv.Handle("fleet-preview", func(_ context.Context, _ socket.Request) socket.Response {
+		if !cfg.fileCfg.Fleet.Enabled {
+			return socket.Response{Error: "fleet is not enabled"}
 		}
-		report, err := reporter.Preview(ctx)
-		if err != nil {
-			return socket.Response{Error: fmt.Sprintf("fleet preview: %s", err)}
-		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(report)}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"endpoint": cfg.fileCfg.Fleet.Endpoint,
+			"enabled":  true,
+		})}
 	})
 
-	srv.Handle("fleet-opt-out", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
-		}
-		reporter.OptOut()
+	srv.Handle("fleet-opt-out", func(_ context.Context, _ socket.Request) socket.Response {
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
 	})
 
-	srv.Handle("fleet-policy", func(ctx context.Context, _ socket.Request) socket.Response {
-		if reporter == nil {
-			return socket.Response{Error: "fleet reporting is not enabled"}
-		}
-		policy := reporter.CurrentPolicy()
-		if policy == nil {
-			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
-		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(policy)}
+	srv.Handle("fleet-policy", func(_ context.Context, _ socket.Request) socket.Response {
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
 	})
 }
 
