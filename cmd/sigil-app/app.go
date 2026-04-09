@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
+	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/socket"
-	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails-bound backend. It communicates with sigild over the Unix
@@ -27,6 +27,7 @@ type App struct {
 	ctx        context.Context
 	socketPath string
 	connected  bool
+	windowOpen bool // true when the app window is visible/focused
 	mu         sync.RWMutex
 
 	// Persistent subscription connection.
@@ -54,6 +55,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.socketPath = defaultSocketPath()
 	a.notifier = newNotifier()
+	a.windowOpen = true // app starts with the window visible
 	a.log.Info("sigil-app starting", "socket", a.socketPath)
 
 	subCtx, cancel := context.WithCancel(ctx)
@@ -228,14 +230,24 @@ func (a *App) handlePushLine(line string) {
 		if err := json.Unmarshal(push.Payload, &sg); err == nil {
 			wailsrt.EventsEmit(a.ctx, "suggestion:new", sg)
 
-			title, _ := sg["title"].(string)
-			body, _ := sg["text"].(string)
-			if body == "" {
-				body, _ = sg["body"].(string)
-			}
-			idFloat, _ := sg["id"].(float64)
-			if title != "" {
-				_ = a.notifier.Show(title, body, "", int64(idFloat))
+			// Only fire native notification when the app window is not
+			// focused — avoid duplicating what the in-app list shows.
+			a.mu.RLock()
+			windowVisible := a.windowOpen
+			a.mu.RUnlock()
+
+			if !windowVisible {
+				title, _ := sg["title"].(string)
+				body, _ := sg["text"].(string)
+				if body == "" {
+					body, _ = sg["body"].(string)
+				}
+				idFloat, _ := sg["id"].(float64)
+				if title != "" {
+					if err := a.notifier.Show(title, body, "", int64(idFloat)); err != nil {
+						a.log.Debug("native notification failed", "err", err)
+					}
+				}
 			}
 		}
 	}
@@ -558,4 +570,20 @@ func (a *App) IsConnected() bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.connected
+}
+
+// NotifyWindowFocus is called by the frontend when the window gains focus.
+// Native notifications are suppressed while the window is visible.
+func (a *App) NotifyWindowFocus() {
+	a.mu.Lock()
+	a.windowOpen = true
+	a.mu.Unlock()
+}
+
+// NotifyWindowBlur is called by the frontend when the window loses focus.
+// Native notifications resume when the window is hidden.
+func (a *App) NotifyWindowBlur() {
+	a.mu.Lock()
+	a.windowOpen = false
+	a.mu.Unlock()
 }

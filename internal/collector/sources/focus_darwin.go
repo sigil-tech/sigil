@@ -22,6 +22,8 @@ import (
 type DarwinFocusSource struct {
 	// Interval is how often the focused app is polled.  Default: 2 seconds.
 	Interval time.Duration
+	// hasAccessibility caches whether the app has Accessibility permission.
+	hasAccessibility *bool
 }
 
 func (s *DarwinFocusSource) Name() string { return "focus" }
@@ -54,12 +56,17 @@ func (s *DarwinFocusSource) Events(ctx context.Context) (<-chan event.Event, err
 				}
 				lastApp = app
 
+				title := ""
+				if s.canReadTitles() {
+					title = windowTitle(app)
+				}
+
 				e := event.Event{
 					Kind:   event.KindHyprland, // reuse existing kind for analyzer compatibility
 					Source: s.Name(),
 					Payload: map[string]any{
 						"window_class": app,
-						"window_title": "", // requires Accessibility permissions
+						"window_title": title,
 						"action":       "focus",
 					},
 					Timestamp: time.Now(),
@@ -74,6 +81,36 @@ func (s *DarwinFocusSource) Events(ctx context.Context) (<-chan event.Event, err
 	}()
 
 	return ch, nil
+}
+
+// canReadTitles checks (and caches) whether Accessibility is available.
+// Re-checks every 60 seconds in case the user grants it while running.
+func (s *DarwinFocusSource) canReadTitles() bool {
+	if s.hasAccessibility != nil {
+		return *s.hasAccessibility
+	}
+	// Try to read a window title. If it works, Accessibility is enabled.
+	out, err := exec.Command("osascript", "-e",
+		`tell application "System Events" to get title of front window of first application process whose frontmost is true`).Output()
+	ok := err == nil && len(strings.TrimSpace(string(out))) > 0
+	s.hasAccessibility = &ok
+	// Re-check after 60 cycles (~2 minutes at default interval).
+	go func() {
+		time.Sleep(60 * s.Interval)
+		s.hasAccessibility = nil
+	}()
+	return ok
+}
+
+// windowTitle returns the title of the frontmost window of the given app
+// using AppleScript. Requires Accessibility permissions.
+func windowTitle(app string) string {
+	script := `tell application "System Events" to get title of front window of application process "` + app + `"`
+	out, err := exec.Command("osascript", "-e", script).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // frontApp returns the display name of the frontmost application using

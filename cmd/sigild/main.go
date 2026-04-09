@@ -41,15 +41,13 @@ import (
 	"github.com/sigil-tech/sigil/internal/config"
 	"github.com/sigil-tech/sigil/internal/event"
 	"github.com/sigil-tech/sigil/internal/inference"
+	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/mcp"
 	"github.com/sigil-tech/sigil/internal/ml"
-
-	signsync "github.com/sigil-tech/sigil/internal/sync"
-
-	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/network"
 	"github.com/sigil-tech/sigil/internal/notifier"
 	"github.com/sigil-tech/sigil/internal/plugin"
+	signsync "github.com/sigil-tech/sigil/internal/sync"
 	"github.com/sigil-tech/sigil/internal/socket"
 	"github.com/sigil-tech/sigil/internal/store"
 	"github.com/sigil-tech/sigil/internal/task"
@@ -356,6 +354,20 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	registerTimelineHandlers(srv, db)
 	registerCloudHandlers(srv, cfg)
 	registerNotificationHandlers(srv, cfg)
+	registerHealthHandler(srv, cfg)
+
+	// test-notify — dev-only: push a fake suggestion to all subscribers.
+	srv.Handle("test-notify", func(_ context.Context, _ socket.Request) socket.Response {
+		payload := socket.MarshalPayload(map[string]any{
+			"id":         999,
+			"title":      "Test notification",
+			"text":       "This is a test suggestion from sigild",
+			"confidence": 0.9,
+			"action_cmd": "",
+		})
+		srv.Notify("suggestions", payload)
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"sent": true})}
+	})
 
 	// --- MCP Tool Registry + Ask Handler ------------------------------------
 	mcpRegistry := mcp.NewRegistry()

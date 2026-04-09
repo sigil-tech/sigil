@@ -23,18 +23,27 @@ const DefaultCloudSyncURL = "https://ingest.sigil.cloud/api/v1"
 // Zero values mean "use the built-in default" so callers can detect which
 // fields were actually set by the file.
 type Config struct {
-	Daemon    DaemonConfig            `toml:"daemon"`
-	Notifier  NotifierConfig          `toml:"notifier"`
-	Inference InferenceConfig         `toml:"inference"`
-	ML        MLConfig                `toml:"ml"`
-	Plugins   map[string]PluginConfig `toml:"plugins"`
-	Retention RetentionConfig         `toml:"retention"`
-	Schedule  ScheduleConfig          `toml:"schedule"`
-	Fleet     FleetConfig             `toml:"fleet"`
-	Network   NetworkConfig           `toml:"network"`
-	Cloud     CloudConfig             `toml:"cloud"`
-	CloudSync CloudSyncConfig         `toml:"cloud_sync"`
-	Sync      SyncConfig              `toml:"sync"`
+	Daemon    DaemonConfig            `toml:"daemon" json:"daemon"`
+	Notifier  NotifierConfig          `toml:"notifier" json:"notifier"`
+	Inference InferenceConfig         `toml:"inference" json:"inference"`
+	ML        MLConfig                `toml:"ml" json:"ml"`
+	Plugins   map[string]PluginConfig `toml:"plugins" json:"plugins,omitempty"`
+	Retention RetentionConfig         `toml:"retention" json:"retention"`
+	Schedule  ScheduleConfig          `toml:"schedule" json:"schedule"`
+	Fleet     FleetConfig             `toml:"fleet" json:"fleet"`
+	Network   NetworkConfig           `toml:"network" json:"network"`
+	Cloud     CloudConfig             `toml:"cloud" json:"cloud"`
+	CloudSync CloudSyncConfig         `toml:"cloud_sync" json:"cloud_sync"`
+	Sync      SyncConfig              `toml:"sync" json:"sync"`
+}
+
+// SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.
+type SyncConfig struct {
+	Enabled  bool   `toml:"enabled" json:"enabled"`
+	APIURL   string `toml:"api_url" json:"api_url"`
+	APIKey   string `toml:"api_key" json:"api_key"`
+	Interval string `toml:"interval" json:"interval"`
+	Batch    int    `toml:"batch_size" json:"batch_size"`
 }
 
 // PluginConfig defines a single plugin's configuration.
@@ -187,15 +196,6 @@ type FleetConfig struct {
 	Endpoint string `toml:"endpoint" json:"endpoint"`
 	Interval string `toml:"interval" json:"interval"`
 	NodeID   string `toml:"node_id" json:"node_id"`
-}
-
-// SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.
-type SyncConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	APIURL   string `toml:"api_url"`
-	APIKey   string `toml:"api_key"`
-	Interval string `toml:"interval"`   // duration string, default "5s"
-	Batch    int    `toml:"batch_size"` // rows per batch, default 100
 }
 
 // ApplyDefaults fills in zero-value fields that have well-known defaults.

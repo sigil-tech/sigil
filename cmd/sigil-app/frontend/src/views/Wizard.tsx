@@ -6,6 +6,8 @@ declare const window: Window & {
       App: {
         RunInit(config: any): Promise<void>;
         CloudSignIn(): Promise<void>;
+        CheckAccessibility(): Promise<boolean>;
+        PromptAccessibility(): Promise<void>;
         DetectEnvironment(): Promise<{
           ides: string[];
           tools: string[];
@@ -61,10 +63,14 @@ export function Wizard({ onComplete }: { onComplete: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newDir, setNewDir] = useState("");
+  const [hasAccessibility, setHasAccessibility] = useState<boolean | null>(null);
 
   useEffect(() => {
     window.go.main.App.DetectEnvironment()
       .then(setDetected)
+      .catch(() => {});
+    window.go.main.App.CheckAccessibility()
+      .then(setHasAccessibility)
       .catch(() => {});
   }, []);
 
@@ -159,6 +165,36 @@ export function Wizard({ onComplete }: { onComplete: () => void }) {
                     </span>
                   ))}
                 </div>
+              </div>
+            )}
+            {hasAccessibility === false && (
+              <div class="wizard-accessibility">
+                <div class="wizard-accessibility-title">
+                  Enable window tracking
+                </div>
+                <p class="wizard-desc" style={{ marginBottom: "10px" }}>
+                  Sigil can see which document or file you're working on (e.g.
+                  "Budget.xlsx" instead of just "Excel"). This requires macOS
+                  Accessibility permission.
+                </p>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  onClick={async () => {
+                    await window.go.main.App.PromptAccessibility();
+                    // Re-check after a delay (user needs to toggle in System Settings).
+                    setTimeout(() => {
+                      window.go.main.App.CheckAccessibility().then(setHasAccessibility);
+                    }, 3000);
+                  }}
+                >
+                  Open Accessibility Settings
+                </button>
+              </div>
+            )}
+            {hasAccessibility === true && (
+              <div class="wizard-accessibility granted">
+                Accessibility enabled — Sigil can read window titles
               </div>
             )}
           </div>

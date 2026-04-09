@@ -2,6 +2,8 @@ import { useState, useEffect } from "preact/hooks";
 import { Toggle } from "../components/Toggle";
 import { EditableList } from "../components/EditableList";
 import { CloudSettings } from "../components/CloudStatus";
+import { HealthPanel } from "../components/HealthPanel";
+import { Permissions } from "../components/Permissions";
 
 declare const window: Window & {
   go: {
@@ -244,6 +246,9 @@ export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => voi
         </div>
       )}
 
+      {/* Health — only shows when there are issues */}
+      <HealthPanel />
+
       {/* Daemon Control */}
       <div class="settings-section">
         <h3>Daemon</h3>
@@ -381,6 +386,18 @@ export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => voi
               placeholder="09:00"
             />
           </div>
+        </div>
+      </div>
+
+      {/* Permissions */}
+      <div class="settings-section">
+        <h3>Permissions</h3>
+        <div class="settings-section-desc">
+          Grant access so Sigil can see what you're working on, not just which
+          app is open.
+        </div>
+        <div class="settings-card">
+          <Permissions />
         </div>
       </div>
 

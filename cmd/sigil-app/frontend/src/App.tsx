@@ -22,11 +22,14 @@ declare const window: Window & {
         IsConnected(): Promise<boolean>;
         GetCurrentTask(): Promise<any>;
         CheckInit(): Promise<{ initialized: boolean; config_path: string }>;
+        NotifyWindowFocus(): Promise<void>;
+        NotifyWindowBlur(): Promise<void>;
       };
     };
   };
   runtime: {
     EventsOn(event: string, cb: (...args: any[]) => void): () => void;
+    EventsEmit(event: string, ...args: any[]): void;
   };
 };
 
@@ -129,10 +132,19 @@ export function App() {
       }
     );
 
+    // Notify Go backend of window focus/blur so it can suppress native
+    // notifications when the app window is visible.
+    const onFocus = () => window.go.main.App.NotifyWindowFocus();
+    const onBlur = () => window.go.main.App.NotifyWindowBlur();
+    globalThis.addEventListener("focus", onFocus);
+    globalThis.addEventListener("blur", onBlur);
+
     return () => {
       offSuggestion();
       offConnection();
       offUpdate();
+      globalThis.removeEventListener("focus", onFocus);
+      globalThis.removeEventListener("blur", onBlur);
     };
   }, [fetchSuggestions, fetchTask]);
 
