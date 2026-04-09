@@ -16,14 +16,18 @@ import (
 // It uses xprintidle for idle time detection and dbus-send for screen lock
 // state via org.freedesktop.ScreenSaver.
 type IdleSource struct {
-	Threshold time.Duration
+	Threshold    time.Duration
+	PollInterval time.Duration
 }
 
-func NewIdleSource(threshold time.Duration) *IdleSource {
+func NewIdleSource(threshold, pollInterval time.Duration) *IdleSource {
 	if threshold <= 0 {
 		threshold = 5 * time.Minute
 	}
-	return &IdleSource{Threshold: threshold}
+	if pollInterval <= 0 {
+		pollInterval = 5 * time.Second
+	}
+	return &IdleSource{Threshold: threshold, PollInterval: pollInterval}
 }
 
 func (s *IdleSource) Name() string { return "idle" }
@@ -34,7 +38,7 @@ func (s *IdleSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	go func() {
 		defer close(ch)
 
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(s.PollInterval)
 		defer ticker.Stop()
 
 		idle := false

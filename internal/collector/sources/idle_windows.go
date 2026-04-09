@@ -32,15 +32,18 @@ const smRemoteSession = 0x1000 // SM_REMOTESESSION
 // It uses GetLastInputInfo (user32.dll) for idle time detection and polls
 // the session state for lock detection.
 type IdleSource struct {
-	Threshold time.Duration
+	Threshold    time.Duration
+	PollInterval time.Duration
 }
 
-// NewIdleSource creates an IdleSource with the given idle threshold.
-func NewIdleSource(threshold time.Duration) *IdleSource {
+func NewIdleSource(threshold, pollInterval time.Duration) *IdleSource {
 	if threshold <= 0 {
 		threshold = 5 * time.Minute
 	}
-	return &IdleSource{Threshold: threshold}
+	if pollInterval <= 0 {
+		pollInterval = 5 * time.Second
+	}
+	return &IdleSource{Threshold: threshold, PollInterval: pollInterval}
 }
 
 func (s *IdleSource) Name() string { return "idle" }
@@ -51,7 +54,7 @@ func (s *IdleSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	go func() {
 		defer close(ch)
 
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(s.PollInterval)
 		defer ticker.Stop()
 
 		idle := false

@@ -26,14 +26,18 @@ import (
 
 // IdleSource detects active/idle transitions and screen lock on macOS.
 type IdleSource struct {
-	Threshold time.Duration // default: 5 minutes
+	Threshold    time.Duration // idle threshold (default: 5m)
+	PollInterval time.Duration // how often to check (default: 5s)
 }
 
-func NewIdleSource(threshold time.Duration) *IdleSource {
+func NewIdleSource(threshold, pollInterval time.Duration) *IdleSource {
 	if threshold <= 0 {
 		threshold = 5 * time.Minute
 	}
-	return &IdleSource{Threshold: threshold}
+	if pollInterval <= 0 {
+		pollInterval = 5 * time.Second
+	}
+	return &IdleSource{Threshold: threshold, PollInterval: pollInterval}
 }
 
 func (s *IdleSource) Name() string { return "idle" }
@@ -44,7 +48,7 @@ func (s *IdleSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	go func() {
 		defer close(ch)
 
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(s.PollInterval)
 		defer ticker.Stop()
 
 		idle := false

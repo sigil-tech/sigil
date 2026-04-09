@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -38,42 +39,130 @@ type Config struct {
 	Sources   SourcesConfig           `toml:"sources" json:"sources"`
 }
 
-// SourcesConfig controls per-source enable/disable and options.
+// SourcesConfig controls per-source enable/disable and poll intervals.
+//
+// The Frequency field sets all sources to a preset:
+//   - "high":   fastest polling, most data, higher CPU
+//   - "medium": balanced (default)
+//   - "low":    minimal polling, least CPU
+//
+// Individual sources can override with their own poll_interval.
 type SourcesConfig struct {
-	Idle         SourceEnabled        `toml:"idle" json:"idle"`
-	Typing       SourceEnabled        `toml:"typing" json:"typing"`
-	Pointer      SourceEnabled        `toml:"pointer" json:"pointer"`
-	Desktop      SourceEnabled        `toml:"desktop" json:"desktop"`
-	Display      SourceEnabled        `toml:"display" json:"display"`
-	Audio        SourceEnabled        `toml:"audio" json:"audio"`
-	Power        SourceEnabled        `toml:"power" json:"power"`
+	Frequency    string               `toml:"frequency" json:"frequency"` // "high", "medium", "low"
+	Idle         SourceConfig         `toml:"idle" json:"idle"`
+	Typing       SourceConfig         `toml:"typing" json:"typing"`
+	Pointer      SourceConfig         `toml:"pointer" json:"pointer"`
+	Desktop      SourceConfig         `toml:"desktop" json:"desktop"`
+	Display      SourceConfig         `toml:"display" json:"display"`
+	Audio        SourceConfig         `toml:"audio" json:"audio"`
+	Power        SourceConfig         `toml:"power" json:"power"`
 	Network      NetworkSourceConfig  `toml:"network" json:"network"`
-	FocusMode    SourceEnabled        `toml:"focus_mode" json:"focus_mode"`
-	AppLifecycle SourceEnabled        `toml:"app_lifecycle" json:"app_lifecycle"`
-	Screenshot   SourceEnabled        `toml:"screenshot" json:"screenshot"`
+	FocusMode    SourceConfig         `toml:"focus_mode" json:"focus_mode"`
+	AppLifecycle SourceConfig         `toml:"app_lifecycle" json:"app_lifecycle"`
+	Screenshot   SourceConfig         `toml:"screenshot" json:"screenshot"`
 	Download     DownloadSourceConfig `toml:"download" json:"download"`
 	Calendar     CalendarSourceConfig `toml:"calendar" json:"calendar"`
 	Browser      BrowserSourceConfig  `toml:"browser" json:"browser"`
 }
 
-// SourceEnabled is a simple enable/disable toggle for a source.
-type SourceEnabled struct {
-	Enabled *bool `toml:"enabled" json:"enabled"`
+// SourceConfig is the common config for a polled source.
+type SourceConfig struct {
+	Enabled      *bool  `toml:"enabled" json:"enabled"`
+	PollInterval string `toml:"poll_interval" json:"poll_interval"` // duration string, e.g. "5s", "30s"
 }
 
 // IsEnabled returns whether the source is enabled, using the provided default
 // when the user hasn't explicitly set a value.
-func (s SourceEnabled) IsEnabled(defaultOn bool) bool {
+func (s SourceConfig) IsEnabled(defaultOn bool) bool {
 	if s.Enabled == nil {
 		return defaultOn
 	}
 	return *s.Enabled
 }
 
+// Interval returns the poll interval, falling back to the given default.
+func (s SourceConfig) Interval(fallback time.Duration) time.Duration {
+	if s.PollInterval == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s.PollInterval)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
+}
+
+// frequencyDefaults maps the frequency preset to per-source default intervals.
+// Sources not listed here use their own hardcoded defaults.
+var frequencyDefaults = map[string]map[string]time.Duration{
+	"high": {
+		"idle":          3 * time.Second,
+		"typing":        15 * time.Second,
+		"pointer":       15 * time.Second,
+		"desktop":       1 * time.Second,
+		"display":       10 * time.Second,
+		"audio":         5 * time.Second,
+		"power":         30 * time.Second,
+		"network":       15 * time.Second,
+		"app_lifecycle": 3 * time.Second,
+		"browser":       1 * time.Second,
+	},
+	"medium": {
+		"idle":          5 * time.Second,
+		"typing":        30 * time.Second,
+		"pointer":       30 * time.Second,
+		"desktop":       2 * time.Second,
+		"display":       30 * time.Second,
+		"audio":         10 * time.Second,
+		"power":         60 * time.Second,
+		"network":       30 * time.Second,
+		"app_lifecycle": 5 * time.Second,
+		"browser":       2 * time.Second,
+	},
+	"low": {
+		"idle":          10 * time.Second,
+		"typing":        60 * time.Second,
+		"pointer":       60 * time.Second,
+		"desktop":       5 * time.Second,
+		"display":       60 * time.Second,
+		"audio":         30 * time.Second,
+		"power":         120 * time.Second,
+		"network":       60 * time.Second,
+		"app_lifecycle": 10 * time.Second,
+		"browser":       5 * time.Second,
+	},
+}
+
+// SourceInterval returns the effective poll interval for a source,
+// checking: (1) source-level override, (2) frequency preset, (3) fallback.
+func (c SourcesConfig) SourceInterval(sourceName string, sourceOverride string, fallback time.Duration) time.Duration {
+	// 1. Explicit per-source override.
+	if sourceOverride != "" {
+		if d, err := time.ParseDuration(sourceOverride); err == nil && d > 0 {
+			return d
+		}
+	}
+
+	// 2. Frequency preset.
+	freq := c.Frequency
+	if freq == "" {
+		freq = "medium"
+	}
+	if defaults, ok := frequencyDefaults[freq]; ok {
+		if d, ok := defaults[sourceName]; ok {
+			return d
+		}
+	}
+
+	// 3. Hardcoded fallback.
+	return fallback
+}
+
 // NetworkSourceConfig adds SSID hashing option.
 type NetworkSourceConfig struct {
-	Enabled  *bool `toml:"enabled" json:"enabled"`
-	HashSSID bool  `toml:"hash_ssid" json:"hash_ssid"`
+	Enabled      *bool  `toml:"enabled" json:"enabled"`
+	PollInterval string `toml:"poll_interval" json:"poll_interval"`
+	HashSSID     bool   `toml:"hash_ssid" json:"hash_ssid"`
 }
 
 // DownloadSourceConfig adds watch directory.
@@ -84,15 +173,16 @@ type DownloadSourceConfig struct {
 
 // CalendarSourceConfig adds calendar filter.
 type CalendarSourceConfig struct {
-	Enabled   *bool    `toml:"enabled" json:"enabled"`
-	Calendars []string `toml:"calendars" json:"calendars"`
+	Enabled      *bool    `toml:"enabled" json:"enabled"`
+	PollInterval string   `toml:"poll_interval" json:"poll_interval"`
+	Calendars    []string `toml:"calendars" json:"calendars"`
 }
 
 // BrowserSourceConfig adds domain blocklist and poll interval.
 type BrowserSourceConfig struct {
 	Enabled        *bool    `toml:"enabled" json:"enabled"`
-	BlockedDomains []string `toml:"blocked_domains" json:"blocked_domains"`
 	PollInterval   string   `toml:"poll_interval" json:"poll_interval"`
+	BlockedDomains []string `toml:"blocked_domains" json:"blocked_domains"`
 }
 
 // SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.

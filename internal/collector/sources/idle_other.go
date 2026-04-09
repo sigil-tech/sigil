@@ -12,11 +12,12 @@ import (
 // IdleSource is a stub on non-macOS platforms.
 // TODO: Implement via XScreenSaverQueryInfo (Linux) and GetLastInputInfo (Windows).
 type IdleSource struct {
-	Threshold time.Duration
+	Threshold    time.Duration
+	PollInterval time.Duration
 }
 
-func NewIdleSource(threshold time.Duration) *IdleSource {
-	return &IdleSource{Threshold: threshold}
+func NewIdleSource(threshold, pollInterval time.Duration) *IdleSource {
+	return &IdleSource{Threshold: threshold, PollInterval: pollInterval}
 }
 
 func (s *IdleSource) Name() string { return "idle" }

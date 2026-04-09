@@ -15,7 +15,7 @@ func addPlatformSources(col *collector.Collector, log *slog.Logger) {
 	col.Add(sources.NewWindowsAppStateSource(log))
 
 	// Spec 023: Knowledge worker signals.
-	col.Add(sources.NewIdleSource(0))
+	col.Add(sources.NewIdleSource(0, 0))
 	col.Add(sources.NewPowerSource())
 	col.Add(sources.NewScreenshotSource())
 	col.Add(sources.NewDownloadSource(""))
