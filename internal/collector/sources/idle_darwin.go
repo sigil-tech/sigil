@@ -92,10 +92,4 @@ func (s *IdleSource) Events(ctx context.Context) (<-chan event.Event, error) {
 	return ch, nil
 }
 
-// emit sends an event to the channel without blocking.
-func emit(ch chan<- event.Event, ctx context.Context, e event.Event) {
-	select {
-	case ch <- e:
-	case <-ctx.Done():
-	}
-}
+// emit is defined in emit.go (shared across all platforms).
