@@ -129,10 +129,12 @@ func (r *fleetReporter) initSeenRecsTable() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	r.db.Exec(ctx, `CREATE TABLE IF NOT EXISTS fleet_seen_recs (
+	if _, err := r.db.Exec(ctx, `CREATE TABLE IF NOT EXISTS fleet_seen_recs (
 		rec_id  TEXT PRIMARY KEY,
 		seen_at INTEGER NOT NULL
-	)`)
+	)`); err != nil {
+		r.log.Warn("fleet: create seen_recs table", "err", err)
+	}
 }
 
 // isRecSeen checks the SQLite table for a previously seen recommendation.
@@ -149,16 +151,20 @@ func (r *fleetReporter) isRecSeen(ctx context.Context, recID string) bool {
 
 // markRecSeen persists a recommendation ID in SQLite.
 func (r *fleetReporter) markRecSeen(ctx context.Context, recID string) {
-	r.db.Exec(ctx,
+	if _, err := r.db.Exec(ctx,
 		`INSERT OR REPLACE INTO fleet_seen_recs (rec_id, seen_at) VALUES (?, ?)`,
 		recID, time.Now().UnixMilli(),
-	)
+	); err != nil {
+		r.log.Debug("fleet: mark rec seen", "err", err)
+	}
 }
 
 // pruneSeenRecs removes entries older than 48 hours.
 func (r *fleetReporter) pruneSeenRecs(ctx context.Context) {
 	cutoff := time.Now().Add(-48 * time.Hour).UnixMilli()
-	r.db.Exec(ctx, `DELETE FROM fleet_seen_recs WHERE seen_at < ?`, cutoff)
+	if _, err := r.db.Exec(ctx, `DELETE FROM fleet_seen_recs WHERE seen_at < ?`, cutoff); err != nil {
+		r.log.Debug("fleet: prune seen recs", "err", err)
+	}
 }
 
 // run is the main reporter loop.
@@ -310,8 +316,10 @@ func (r *fleetReporter) computeReport(ctx context.Context) (fleetReport, error) 
 		}
 	}
 
-	// Suggestion acceptance.
-	rpt.SuggestionAcceptRate, _ = r.db.QuerySuggestionAcceptanceRate(ctx, since)
+	// Suggestion acceptance (0.0 on error is a safe default for aggregation).
+	if rate, err := r.db.QuerySuggestionAcceptanceRate(ctx, since); err == nil {
+		rpt.SuggestionAcceptRate = rate
+	}
 
 	// Task metrics.
 	tm, err := r.db.QueryTaskMetrics(ctx, since)
@@ -332,11 +340,14 @@ func (r *fleetReporter) computeReport(ctx context.Context) (fleetReport, error) 
 	// Adoption tier.
 	rpt.AdoptionTier = computeAdoptionTier(rpt.TotalEvents, rpt.SuggestionAcceptRate)
 
-	// Spec 023 enrichments.
-	rpt.IdleMinutes, _ = r.db.QueryEventDurations(ctx, event.KindIdle, "idle_seconds", since)
-	rpt.IdleMinutes /= 60.0
+	// Spec 023 enrichments (0.0 on error is safe — means no data for this period).
+	if idle, err := r.db.QueryEventDurations(ctx, event.KindIdle, "idle_seconds", since); err == nil {
+		rpt.IdleMinutes = idle / 60.0
+	}
 
-	rpt.MeetingMinutes, _ = r.db.QueryEventDurations(ctx, event.KindCalendar, "duration_minutes", since)
+	if meeting, err := r.db.QueryEventDurations(ctx, event.KindCalendar, "duration_minutes", since); err == nil {
+		rpt.MeetingMinutes = meeting
+	}
 
 	intervalMinutes := r.interval.Minutes()
 	rpt.ActiveMinutes = intervalMinutes - rpt.IdleMinutes - rpt.MeetingMinutes
