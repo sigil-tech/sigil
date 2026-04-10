@@ -462,7 +462,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// anonymized aggregates from the local store and POSTs them to the fleet API.
 	var reporter *fleetReporter
 	if cfg.fileCfg.Cloud.APIKey != "" {
-		reporter = newFleetReporter(db, cfg, log)
+		reporter = newFleetReporter(db, cfg, ntf, log)
 		// Reporter goroutine — sends hourly aggregates to fleet.
 		go reporter.run(ctx)
 	}
@@ -2293,12 +2293,7 @@ func registerFleetHandlers(srv *socket.Server, r *fleetReporter) {
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(report)}
 	})
 
-	srv.Handle("fleet-opt-out", func(_ context.Context, _ socket.Request) socket.Response {
-		if r != nil {
-			r.optOut()
-		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
-	})
+	// No fleet-opt-out handler — fleet is an organizational decision, not individual.
 
 	srv.Handle("fleet-policy", func(_ context.Context, _ socket.Request) socket.Response {
 		if r == nil {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sigil-tech/sigil/internal/config"
 	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/notifier"
 	"github.com/sigil-tech/sigil/internal/store"
 )
 
@@ -50,7 +51,7 @@ type fleetReport struct {
 // fleetRecommendation is a team/org recommendation from the fleet policy.
 type fleetRecommendation struct {
 	ID         string  `json:"id"`
-	Scope      string  `json:"scope"` // "individual", "team", "org"
+	Scope      string  `json:"scope"`
 	Title      string  `json:"title"`
 	Body       string  `json:"body"`
 	Confidence float64 `json:"confidence"`
@@ -63,6 +64,16 @@ type fleetPolicy struct {
 	Recommendations []fleetRecommendation `json:"recommendations,omitempty"`
 }
 
+// enrollmentResult is the response from POST /api/v1/enroll.
+type enrollmentResult struct {
+	OrgID    int            `json:"org_id"`
+	TeamID   int            `json:"team_id"`
+	OrgName  string         `json:"org_name"`
+	TeamName string         `json:"team_name"`
+	Role     string         `json:"role"`
+	Settings map[string]any `json:"org_settings,omitempty"`
+}
+
 // fleetReporter computes anonymized aggregates from the local store and
 // sends them to the fleet service. It runs as a background goroutine.
 type fleetReporter struct {
@@ -73,16 +84,17 @@ type fleetReporter struct {
 	nodeID   string
 	log      *slog.Logger
 	cfgPath  string
+	ntf      *notifier.Notifier
 
 	mu           sync.Mutex
 	queue        []fleetReport
 	cachedPolicy *fleetPolicy
+	enrollment   *enrollmentResult
 	lastSent     time.Time
-	seenRecs     map[string]time.Time // recommendation dedup
 	active       bool
 }
 
-func newFleetReporter(db *store.Store, cfg daemonConfig, log *slog.Logger) *fleetReporter {
+func newFleetReporter(db *store.Store, cfg daemonConfig, ntf *notifier.Notifier, log *slog.Logger) *fleetReporter {
 	endpoint := cfg.fileCfg.Fleet.Endpoint
 	if endpoint == "" {
 		endpoint = config.DefaultFleetEndpoint
@@ -105,21 +117,61 @@ func newFleetReporter(db *store.Store, cfg daemonConfig, log *slog.Logger) *flee
 		nodeID:   cfg.fileCfg.Fleet.NodeID,
 		log:      log,
 		cfgPath:  cfg.configPath,
-		seenRecs: make(map[string]time.Time),
+		ntf:      ntf,
 		active:   token != "",
 	}
 }
 
-// run is the main reporter loop. It runs until ctx is cancelled.
+// initSeenRecsTable creates the fleet_seen_recs table for persisted dedup.
+func (r *fleetReporter) initSeenRecsTable() {
+	if r.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.db.Exec(ctx, `CREATE TABLE IF NOT EXISTS fleet_seen_recs (
+		rec_id  TEXT PRIMARY KEY,
+		seen_at INTEGER NOT NULL
+	)`)
+}
+
+// isRecSeen checks the SQLite table for a previously seen recommendation.
+func (r *fleetReporter) isRecSeen(ctx context.Context, recID string) bool {
+	var seenAt int64
+	err := r.db.QueryRow(ctx,
+		`SELECT seen_at FROM fleet_seen_recs WHERE rec_id = ?`, recID,
+	).Scan(&seenAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(time.UnixMilli(seenAt)) < 24*time.Hour
+}
+
+// markRecSeen persists a recommendation ID in SQLite.
+func (r *fleetReporter) markRecSeen(ctx context.Context, recID string) {
+	r.db.Exec(ctx,
+		`INSERT OR REPLACE INTO fleet_seen_recs (rec_id, seen_at) VALUES (?, ?)`,
+		recID, time.Now().UnixMilli(),
+	)
+}
+
+// pruneSeenRecs removes entries older than 48 hours.
+func (r *fleetReporter) pruneSeenRecs(ctx context.Context) {
+	cutoff := time.Now().Add(-48 * time.Hour).UnixMilli()
+	r.db.Exec(ctx, `DELETE FROM fleet_seen_recs WHERE seen_at < ?`, cutoff)
+}
+
+// run is the main reporter loop.
 func (r *fleetReporter) run(ctx context.Context) {
 	r.ensureNodeID()
+	r.initSeenRecsTable()
 
 	if !r.active {
 		r.log.Info("fleet reporter: inactive (no cloud token)")
 		return
 	}
 
-	// Jitter initial delay to avoid thundering herd.
+	// Jitter initial delay.
 	jitter := time.Duration(randInt63(int64(r.interval / 4)))
 	select {
 	case <-time.After(jitter):
@@ -128,6 +180,9 @@ func (r *fleetReporter) run(ctx context.Context) {
 	}
 
 	r.log.Info("fleet reporter: starting", "endpoint", r.endpoint, "interval", r.interval)
+
+	// Enroll on first cycle.
+	r.enroll(ctx)
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -143,6 +198,10 @@ func (r *fleetReporter) run(ctx context.Context) {
 }
 
 func (r *fleetReporter) cycle(ctx context.Context) {
+	if !r.isActive() {
+		return
+	}
+
 	report, err := r.computeReport(ctx)
 	if err != nil {
 		r.log.Warn("fleet: compute report failed", "err", err)
@@ -157,7 +216,58 @@ func (r *fleetReporter) cycle(ctx context.Context) {
 
 	r.sendQueued(ctx)
 	r.fetchPolicy(ctx)
-	r.pruneSeenRecs()
+	r.surfaceRecommendations(ctx)
+	r.pruneSeenRecs(ctx)
+}
+
+// enroll registers this node with the fleet service (idempotent upsert).
+func (r *fleetReporter) enroll(ctx context.Context) {
+	body, err := json.Marshal(map[string]string{
+		"node_id":  r.nodeID,
+		"platform": runtime.GOOS,
+		"version":  "0.1.0-dev",
+	})
+	if err != nil {
+		return
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		r.endpoint+"/enroll", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		r.log.Debug("fleet: enrollment failed (will retry)", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		r.mu.Lock()
+		r.active = false
+		r.mu.Unlock()
+		r.log.Warn("fleet: enrollment rejected, deactivating", "status", resp.StatusCode)
+		return
+	}
+
+	var result enrollmentResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		r.log.Debug("fleet: enrollment decode failed", "err", err)
+		return
+	}
+
+	r.mu.Lock()
+	r.enrollment = &result
+	r.mu.Unlock()
+
+	r.log.Info("fleet: enrolled", "org", result.OrgName, "team", result.TeamName, "role", result.Role)
 }
 
 // computeReport aggregates local store data into a fleet report.
@@ -219,12 +329,12 @@ func (r *fleetReporter) computeReport(ctx context.Context) (fleetReport, error) 
 		rpt.MLPredictions = ml.Predictions
 	}
 
-	// Adoption tier (0-3 based on event volume + acceptance rate).
+	// Adoption tier.
 	rpt.AdoptionTier = computeAdoptionTier(rpt.TotalEvents, rpt.SuggestionAcceptRate)
 
 	// Spec 023 enrichments.
 	rpt.IdleMinutes, _ = r.db.QueryEventDurations(ctx, event.KindIdle, "idle_seconds", since)
-	rpt.IdleMinutes /= 60.0 // convert seconds to minutes
+	rpt.IdleMinutes /= 60.0
 
 	rpt.MeetingMinutes, _ = r.db.QueryEventDurations(ctx, event.KindCalendar, "duration_minutes", since)
 
@@ -245,26 +355,24 @@ func (r *fleetReporter) computeReport(ctx context.Context) (fleetReport, error) 
 		}
 	}
 
-	// Context switches (focus change events).
+	// Context switches.
 	focusCount, _ := r.db.CountEvents(ctx, event.KindHyprland, since)
 	rpt.ContextSwitches = int(focusCount)
 
-	// Top apps (from focus events, grouped by window_class).
+	// Top apps.
 	appCounts, err := r.db.QueryEventPayloadGroupCount(ctx, event.KindHyprland, "window_class", since)
 	if err == nil {
 		rpt.TopApps = make(map[string]float64)
 		for app, cnt := range appCounts {
 			if app != "" {
-				// Estimate minutes: count × poll interval (2s default)
 				rpt.TopApps[app] = float64(cnt) * 2.0 / 60.0
 			}
 		}
 	}
 
-	// Focus score: simplified heuristic — ratio of time without context switches.
+	// Focus score heuristic.
 	if rpt.ActiveMinutes > 0 && rpt.ContextSwitches > 0 {
 		switchesPerMinute := float64(rpt.ContextSwitches) / rpt.ActiveMinutes
-		// Score decreases as switches increase. 0 switches = 100, >2/min = 0.
 		rpt.FocusScore = 100.0 * (1.0 - min(switchesPerMinute/2.0, 1.0))
 	} else if rpt.ActiveMinutes > 0 {
 		rpt.FocusScore = 100.0
@@ -321,7 +429,7 @@ func (r *fleetReporter) enqueue(report fleetReport) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.queue) >= 24 {
-		r.queue = r.queue[1:] // drop oldest
+		r.queue = r.queue[1:]
 	}
 	r.queue = append(r.queue, report)
 }
@@ -383,39 +491,53 @@ func (r *fleetReporter) fetchPolicy(ctx context.Context) {
 	r.mu.Unlock()
 }
 
-// newRecommendations returns recommendations not seen in the last 24 hours.
-func (r *fleetReporter) newRecommendations() []fleetRecommendation {
+// surfaceRecommendations pushes new team/org recommendations to the notifier.
+func (r *fleetReporter) surfaceRecommendations(ctx context.Context) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	policy := r.cachedPolicy
+	r.mu.Unlock()
 
-	if r.cachedPolicy == nil {
-		return nil
+	if policy == nil || r.ntf == nil {
+		return
 	}
 
-	var fresh []fleetRecommendation
-	now := time.Now()
-	for _, rec := range r.cachedPolicy.Recommendations {
-		if seenAt, ok := r.seenRecs[rec.ID]; ok && now.Sub(seenAt) < 24*time.Hour {
+	for _, rec := range policy.Recommendations {
+		if r.isRecSeen(ctx, rec.ID) {
 			continue
 		}
-		r.seenRecs[rec.ID] = now
-		fresh = append(fresh, rec)
+
+		category := "team_insight"
+		if rec.Scope == "org" {
+			category = "org_insight"
+		}
+
+		r.ntf.Surface(notifier.Suggestion{
+			Category:   category,
+			Confidence: rec.Confidence,
+			Title:      rec.Title,
+			Body:       rec.Body,
+		})
+
+		r.markRecSeen(ctx, rec.ID)
 	}
-	return fresh
 }
 
-func (r *fleetReporter) pruneSeenRecs() {
+// orgSettingsNotificationFloor returns the org-wide notification minimum,
+// or -1 if not set.
+func (r *fleetReporter) orgSettingsNotificationFloor() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cutoff := time.Now().Add(-48 * time.Hour)
-	for id, t := range r.seenRecs {
-		if t.Before(cutoff) {
-			delete(r.seenRecs, id)
-		}
+
+	if r.cachedPolicy == nil || r.cachedPolicy.OrgSettings == nil {
+		return -1
 	}
+
+	if floor, ok := r.cachedPolicy.OrgSettings["notification_level_floor"].(float64); ok {
+		return int(floor)
+	}
+	return -1
 }
 
-// ensureNodeID generates a stable node ID if one doesn't exist.
 func (r *fleetReporter) ensureNodeID() {
 	if r.nodeID != "" {
 		return
@@ -435,17 +557,11 @@ func (r *fleetReporter) isActive() bool {
 	return r.active
 }
 
-func (r *fleetReporter) optOut() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.active = false
-	r.queue = nil
-}
-
 func (r *fleetReporter) status() map[string]any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return map[string]any{
+
+	s := map[string]any{
 		"active":     r.active,
 		"node_id":    r.nodeID,
 		"endpoint":   r.endpoint,
@@ -453,19 +569,26 @@ func (r *fleetReporter) status() map[string]any {
 		"queue_size": len(r.queue),
 		"interval":   r.interval.String(),
 	}
+
+	if r.enrollment != nil {
+		s["org_name"] = r.enrollment.OrgName
+		s["team_name"] = r.enrollment.TeamName
+		s["role"] = r.enrollment.Role
+	}
+
+	return s
 }
 
-// computeAdoptionTier returns 0-3 based on usage intensity.
 func computeAdoptionTier(totalEvents int, acceptRate float64) int {
 	switch {
 	case totalEvents > 1000 && acceptRate > 0.5:
-		return 3 // power user
+		return 3
 	case totalEvents > 500 && acceptRate > 0.3:
-		return 2 // active
+		return 2
 	case totalEvents > 100:
-		return 1 // onboarding
+		return 1
 	default:
-		return 0 // inactive
+		return 0
 	}
 }
 

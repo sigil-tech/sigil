@@ -119,6 +119,17 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Exec runs a raw SQL statement. Used by internal components (fleet reporter)
+// that need to create/manage their own tables.
+func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+// QueryRow runs a raw SQL query returning a single row.
+func (s *Store) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
 // TaskMetrics holds aggregated task lifecycle metrics for fleet reporting.
 type TaskMetrics struct {
 	TasksCompleted    int

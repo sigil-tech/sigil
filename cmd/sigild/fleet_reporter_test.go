@@ -73,6 +73,16 @@ func TestFleetReportJSON(t *testing.T) {
 	}
 }
 
+func newTestReporter(endpoint string) *fleetReporter {
+	return &fleetReporter{
+		endpoint: endpoint,
+		token:    "test_token_123",
+		nodeID:   "n_test",
+		active:   true,
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
 func TestPostReportAuth(t *testing.T) {
 	t.Parallel()
 
@@ -86,14 +96,7 @@ func TestPostReportAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := &fleetReporter{
-		endpoint: srv.URL,
-		token:    "test_token_123",
-		nodeID:   "n_test",
-		seenRecs: make(map[string]time.Time),
-		active:   true,
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	r := newTestReporter(srv.URL)
 
 	rpt := fleetReport{NodeID: "n_test", Timestamp: time.Now()}
 	if err := r.postReport(t.Context(), rpt); err != nil {
@@ -116,14 +119,8 @@ func TestPostReportDeactivatesOn403(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := &fleetReporter{
-		endpoint: srv.URL,
-		token:    "expired_token",
-		nodeID:   "n_test",
-		seenRecs: make(map[string]time.Time),
-		active:   true,
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	r := newTestReporter(srv.URL)
+	r.token = "expired_token"
 
 	rpt := fleetReport{NodeID: "n_test", Timestamp: time.Now()}
 	err := r.postReport(t.Context(), rpt)
@@ -139,12 +136,8 @@ func TestPostReportDeactivatesOn403(t *testing.T) {
 func TestQueueAndDrain(t *testing.T) {
 	t.Parallel()
 
-	r := &fleetReporter{
-		seenRecs: make(map[string]time.Time),
-		active:   true,
-	}
+	r := newTestReporter("")
 
-	// Enqueue 3 reports.
 	for i := 0; i < 3; i++ {
 		r.enqueue(fleetReport{NodeID: "n_test"})
 	}
@@ -155,7 +148,6 @@ func TestQueueAndDrain(t *testing.T) {
 	}
 	r.mu.Unlock()
 
-	// Verify cap at 24.
 	for i := 0; i < 25; i++ {
 		r.enqueue(fleetReport{NodeID: "n_test"})
 	}
@@ -169,23 +161,20 @@ func TestQueueAndDrain(t *testing.T) {
 func TestEnsureNodeID(t *testing.T) {
 	t.Parallel()
 
-	r := &fleetReporter{
-		seenRecs: make(map[string]time.Time),
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	r := newTestReporter("")
+	r.nodeID = ""
 	r.ensureNodeID()
 
 	if r.nodeID == "" {
 		t.Fatal("nodeID should not be empty")
 	}
-	if len(r.nodeID) != 18 { // "n_" + 16 hex chars
+	if len(r.nodeID) != 18 {
 		t.Errorf("nodeID length = %d, want 18, got %q", len(r.nodeID), r.nodeID)
 	}
 	if r.nodeID[:2] != "n_" {
 		t.Errorf("nodeID should start with n_, got %q", r.nodeID)
 	}
 
-	// Should not change on second call.
 	first := r.nodeID
 	r.ensureNodeID()
 	if r.nodeID != first {
@@ -193,31 +182,85 @@ func TestEnsureNodeID(t *testing.T) {
 	}
 }
 
-func TestRecommendationDedup(t *testing.T) {
+func TestEnrollment(t *testing.T) {
 	t.Parallel()
 
-	r := &fleetReporter{
-		seenRecs: make(map[string]time.Time),
-		active:   true,
+	var gotMethod string
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(enrollmentResult{
+			OrgID:    1,
+			TeamID:   5,
+			OrgName:  "Acme",
+			TeamName: "Backend",
+			Role:     "member",
+		})
+	}))
+	defer srv.Close()
+
+	r := newTestReporter(srv.URL)
+	r.enroll(t.Context())
+
+	if gotMethod != "POST" {
+		t.Errorf("method = %s, want POST", gotMethod)
 	}
+	if gotBody["node_id"] != "n_test" {
+		t.Errorf("node_id = %s, want n_test", gotBody["node_id"])
+	}
+
+	r.mu.Lock()
+	if r.enrollment == nil {
+		t.Fatal("enrollment not cached")
+	}
+	if r.enrollment.OrgName != "Acme" {
+		t.Errorf("org = %s, want Acme", r.enrollment.OrgName)
+	}
+	r.mu.Unlock()
+}
+
+func TestOrgSettingsNotificationFloor(t *testing.T) {
+	t.Parallel()
+
+	r := newTestReporter("")
+
+	// No policy → -1.
+	if floor := r.orgSettingsNotificationFloor(); floor != -1 {
+		t.Errorf("no policy: floor = %d, want -1", floor)
+	}
+
+	// With policy.
 	r.mu.Lock()
 	r.cachedPolicy = &fleetPolicy{
-		Recommendations: []fleetRecommendation{
-			{ID: "rec_1", Title: "Test 1"},
-			{ID: "rec_2", Title: "Test 2"},
+		OrgSettings: map[string]any{
+			"notification_level_floor": float64(3),
 		},
 	}
 	r.mu.Unlock()
 
-	// First call: both are new.
-	fresh := r.newRecommendations()
-	if len(fresh) != 2 {
-		t.Errorf("first call: got %d recs, want 2", len(fresh))
+	if floor := r.orgSettingsNotificationFloor(); floor != 3 {
+		t.Errorf("with policy: floor = %d, want 3", floor)
 	}
+}
 
-	// Second call: both are seen.
-	fresh = r.newRecommendations()
-	if len(fresh) != 0 {
-		t.Errorf("second call: got %d recs, want 0", len(fresh))
+func TestFleetStatus(t *testing.T) {
+	t.Parallel()
+
+	r := newTestReporter("https://fleet.example.com")
+	r.mu.Lock()
+	r.enrollment = &enrollmentResult{OrgName: "Acme", TeamName: "Backend", Role: "member"}
+	r.mu.Unlock()
+
+	s := r.status()
+
+	if s["active"] != true {
+		t.Errorf("active = %v, want true", s["active"])
+	}
+	if s["org_name"] != "Acme" {
+		t.Errorf("org_name = %v, want Acme", s["org_name"])
+	}
+	if s["team_name"] != "Backend" {
+		t.Errorf("team_name = %v, want Backend", s["team_name"])
 	}
 }
