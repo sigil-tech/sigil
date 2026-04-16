@@ -48,6 +48,12 @@ config (no internal imports)
   ↑
 store (imports event)
   ↑
+filter (imports config; shared denylist filtering for merge and corpus)
+  ↑
+merge (imports store, config, filter; VM-to-host pipeline)
+  ↑
+hostctx, finetuner (siblings; import store/config)
+  ↑
 inference (no internal imports — isolated backends)
   ↑
 collector (imports event; defines Source interface)
@@ -55,6 +61,8 @@ collector (imports event; defines Source interface)
 notifier (imports store interfaces)
   ↑
 analyzer (imports event, store, inference, notifier)
+  ↑
+corpus (imports store, inference, config, filter; training corpus annotation pipeline)
   ↑
 actuator (imports event; defines own StoreWriter interface)
   ↑
@@ -77,6 +85,7 @@ cmd/sigilctl (socket client + offline SQLite reads)
 | `Actuator` | actuator | Reversible action execution |
 | `SuggestionStore` | notifier | Suggestion persistence |
 | `RunCmd` | actuator | Shell command execution (injectable for testing) |
+| `FinetuneBackend` | finetuner | LoRA fine-tuning (LocalFinetuneBackend, HostedFinetuneBackend) |
 
 Consumers depend on these interfaces, not on `*store.Store` directly.
 

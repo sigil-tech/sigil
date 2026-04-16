@@ -130,6 +130,12 @@ func (s *Store) QueryRow(ctx context.Context, query string, args ...any) *sql.Ro
 	return s.db.QueryRowContext(ctx, query, args...)
 }
 
+// DB returns the underlying *sql.DB handle. Used by packages that need direct
+// database access for tables managed outside the store abstraction (e.g., merge, vm).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // TaskMetrics holds aggregated task lifecycle metrics for fleet reporting.
 type TaskMetrics struct {
 	TasksCompleted    int
@@ -1216,24 +1222,104 @@ func scanTaskRows(rows *sql.Rows) ([]TaskRecord, error) {
 	return out, rows.Err()
 }
 
-// migrate creates all tables and indexes if they do not already exist.
-// Idempotent — safe to call on every startup.
-func migrate(db *sql.DB) error {
-	schema := `
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+// migration is a versioned schema migration applied inside a transaction.
+// Versions must be unique and monotonically increasing.
+type migration struct {
+	version int
+	name    string
+	fn      func(tx *sql.Tx) error
+}
 
-CREATE TABLE IF NOT EXISTS events (
+// migrations is the ordered list of schema migrations. Add new entries at the
+// end only; never modify existing entries.
+var migrations = []migration{
+	{version: 1, name: "initial schema", fn: migrateV1},
+	{version: 2, name: "vm lifecycle tables", fn: migrateV2},
+	{version: 3, name: "corpus annotation and dedup", fn: migrateV3},
+	{version: 4, name: "finetuner tables", fn: migrateV4},
+}
+
+// migrate sets WAL mode and foreign keys, creates the schema_version table,
+// detects the current version, and applies any pending migrations in order.
+// Each migration runs in its own transaction. Failure prevents daemon startup.
+func migrate(db *sql.DB) error {
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		return fmt.Errorf("store: set WAL mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("store: enable foreign keys: %w", err)
+	}
+
+	// Ensure the version tracking table exists.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return fmt.Errorf("store: create schema_version: %w", err)
+	}
+
+	// Read the current version. A missing row means version 0.
+	var current int
+	err := db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&current)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("store: read schema version: %w", err)
+	}
+
+	// Version 0 with existing tables is a pre-versioning database. The v1
+	// migration uses CREATE TABLE IF NOT EXISTS throughout, so it is safe to
+	// run against an existing schema — it will be a no-op for every table
+	// that already exists.
+
+	for _, m := range migrations {
+		if m.version <= current {
+			continue
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("store: begin migration v%d (%s): %w", m.version, m.name, err)
+		}
+
+		if err := m.fn(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("store: migration v%d (%s): %w", m.version, m.name, err)
+		}
+
+		// Upsert the version row.
+		if current == 0 {
+			if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (?)`, m.version); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store: record migration v%d: %w", m.version, err)
+			}
+		} else {
+			if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, m.version); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store: record migration v%d: %w", m.version, err)
+			}
+		}
+		current = m.version
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: commit migration v%d (%s): %w", m.version, m.name, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV1 creates the initial schema. All statements use CREATE TABLE IF NOT
+// EXISTS so the function is safe to run against a pre-versioning database that
+// already has these tables.
+func migrateV1(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     kind    TEXT    NOT NULL,
     source  TEXT    NOT NULL,
     payload TEXT    NOT NULL,
     ts      INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_kind ON events (kind);
-CREATE INDEX IF NOT EXISTS idx_events_ts   ON events (ts);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_kind ON events (kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_ts   ON events (ts)`,
 
-CREATE TABLE IF NOT EXISTS ai_interactions (
+		`CREATE TABLE IF NOT EXISTS ai_interactions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     query_text     TEXT,
     query_category TEXT,
@@ -1241,18 +1327,18 @@ CREATE TABLE IF NOT EXISTS ai_interactions (
     latency_ms     INTEGER NOT NULL,
     accepted       INTEGER NOT NULL DEFAULT 0,
     ts             INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_ai_ts ON ai_interactions (ts);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_ts ON ai_interactions (ts)`,
 
-CREATE TABLE IF NOT EXISTS patterns (
+		`CREATE TABLE IF NOT EXISTS patterns (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL UNIQUE,
     summary    TEXT    NOT NULL,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
-);
+)`,
 
-CREATE TABLE IF NOT EXISTS suggestions (
+		`CREATE TABLE IF NOT EXISTS suggestions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     category    TEXT    NOT NULL,
     confidence  REAL    NOT NULL,
@@ -1263,17 +1349,17 @@ CREATE TABLE IF NOT EXISTS suggestions (
     created_at  INTEGER NOT NULL,
     shown_at    INTEGER,
     resolved_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions (status);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions (status)`,
 
-CREATE TABLE IF NOT EXISTS feedback (
+		`CREATE TABLE IF NOT EXISTS feedback (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
     outcome       TEXT    NOT NULL,
     ts            INTEGER NOT NULL
-);
+)`,
 
-CREATE TABLE IF NOT EXISTS action_log (
+		`CREATE TABLE IF NOT EXISTS action_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     action_id   TEXT    NOT NULL UNIQUE,
     description TEXT    NOT NULL,
@@ -1282,10 +1368,10 @@ CREATE TABLE IF NOT EXISTS action_log (
     created_at  INTEGER NOT NULL,
     undone_at   INTEGER,
     expires_at  INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log (created_at);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log (created_at)`,
 
-CREATE TABLE IF NOT EXISTS tasks (
+		`CREATE TABLE IF NOT EXISTS tasks (
     id           TEXT    PRIMARY KEY,
     repo_root    TEXT    NOT NULL,
     branch       TEXT    NOT NULL DEFAULT '',
@@ -1297,50 +1383,176 @@ CREATE TABLE IF NOT EXISTS tasks (
     commit_count INTEGER NOT NULL DEFAULT 0,
     test_runs    INTEGER NOT NULL DEFAULT 0,
     test_fails   INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks (phase);
-CREATE INDEX IF NOT EXISTS idx_tasks_started ON tasks (started_at);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks (phase)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_started ON tasks (started_at)`,
 
-CREATE TABLE IF NOT EXISTS ml_events (
+		`CREATE TABLE IF NOT EXISTS ml_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL,
     endpoint   TEXT    NOT NULL,
     routing    TEXT    NOT NULL,
     latency_ms INTEGER NOT NULL,
     ts         INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_ml_events_ts ON ml_events(ts);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_ml_events_ts ON ml_events(ts)`,
 
-CREATE TABLE IF NOT EXISTS ml_predictions (
+		`CREATE TABLE IF NOT EXISTS ml_predictions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     model      TEXT NOT NULL,
     result     TEXT NOT NULL,
     confidence REAL NOT NULL,
     created_at INTEGER NOT NULL,
     expires_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_ml_predictions_model ON ml_predictions(model);
-CREATE INDEX IF NOT EXISTS idx_ml_predictions_created ON ml_predictions(created_at);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_ml_predictions_model ON ml_predictions(model)`,
+		`CREATE INDEX IF NOT EXISTS idx_ml_predictions_created ON ml_predictions(created_at)`,
 
-CREATE TABLE IF NOT EXISTS plugin_events (
+		`CREATE TABLE IF NOT EXISTS plugin_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     plugin      TEXT NOT NULL,
     kind        TEXT NOT NULL,
     correlation TEXT NOT NULL DEFAULT '{}',
     payload     TEXT NOT NULL DEFAULT '{}',
     ts          INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_plugin_events_plugin ON plugin_events(plugin);
-CREATE INDEX IF NOT EXISTS idx_plugin_events_ts ON plugin_events(ts);
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_events_plugin ON plugin_events(plugin)`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_events_ts ON plugin_events(ts)`,
 
-CREATE TABLE IF NOT EXISTS sync_cursors (
+		`CREATE TABLE IF NOT EXISTS sync_cursors (
     table_name     TEXT PRIMARY KEY,
     last_synced_id INTEGER NOT NULL DEFAULT 0,
     last_synced_at INTEGER NOT NULL DEFAULT 0
-);`
+)`,
+	}
 
-	_, err := db.Exec(schema)
-	return err
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("exec %q: %w", s[:min(40, len(s))], err)
+		}
+	}
+	return nil
+}
+
+// migrateV2 adds the VM lifecycle tables used by the session merge pipeline.
+func migrateV2(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS sessions (
+  id              TEXT    PRIMARY KEY,
+  started_at      INTEGER NOT NULL,
+  ended_at        INTEGER,
+  status          TEXT    NOT NULL,
+  merge_outcome   TEXT    NOT NULL DEFAULT 'pending',
+  disk_image_path TEXT    NOT NULL,
+  overlay_path    TEXT    NOT NULL DEFAULT '',
+  vm_db_path      TEXT    NOT NULL DEFAULT '',
+  vsock_cid       INTEGER NOT NULL DEFAULT 0,
+  filter_version  TEXT    NOT NULL DEFAULT ''
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_status  ON sessions(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at)`,
+
+		`CREATE TABLE IF NOT EXISTS training_corpus (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                 INTEGER NOT NULL,
+  origin             TEXT    NOT NULL,
+  origin_session     TEXT    NOT NULL REFERENCES sessions(id),
+  event_type         TEXT    NOT NULL,
+  source             TEXT    NOT NULL,
+  payload            BLOB,
+  payload_size_bytes INTEGER NOT NULL DEFAULT 0,
+  filter_version     TEXT    NOT NULL,
+  vm_row_id          INTEGER NOT NULL DEFAULT 0
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_training_corpus_session ON training_corpus(origin_session)`,
+		`CREATE INDEX IF NOT EXISTS idx_training_corpus_ts      ON training_corpus(ts)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS ux_training_corpus_origin
+  ON training_corpus(origin_session, vm_row_id)
+  WHERE origin = 'vm_merge'`,
+
+		`CREATE TABLE IF NOT EXISTS merge_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id    TEXT    NOT NULL UNIQUE REFERENCES sessions(id),
+  vm_db_path    TEXT    NOT NULL,
+  started_at    INTEGER NOT NULL,
+  completed_at  INTEGER,
+  status        TEXT    NOT NULL,
+  rows_merged   INTEGER NOT NULL DEFAULT 0,
+  rows_filtered INTEGER NOT NULL DEFAULT 0,
+  checkpoint    INTEGER NOT NULL DEFAULT 0,
+  filter_version TEXT   NOT NULL,
+  error_msg     TEXT
+)`,
+
+		`CREATE TABLE IF NOT EXISTS filtered_log (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      TEXT    NOT NULL REFERENCES sessions(id),
+  ts              INTEGER NOT NULL,
+  event_type      TEXT    NOT NULL,
+  filter_rule     TEXT    NOT NULL,
+  excluded_reason TEXT    NOT NULL,
+  payload_hash    TEXT    NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_filtered_log_session ON filtered_log(session_id)`,
+	}
+
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("exec %q: %w", s[:min(40, len(s))], err)
+		}
+	}
+	return nil
+}
+
+// OpenReadOnly opens the SQLite database at path in read-only mode.
+// It sets PRAGMA query_only=ON and does NOT set WAL mode or execute write
+// PRAGMAs. The caller is responsible for calling Close on the returned *sql.DB.
+func OpenReadOnly(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path+"?mode=ro")
+	if err != nil {
+		return nil, fmt.Errorf("store: open read-only %s: %w", path, err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA query_only = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: set query_only: %w", err)
+	}
+	return db, nil
+}
+
+// PatternSummary is a reduced-projection type used by the HostContextReader
+// interface. It contains no internal IDs — only the data needed for cross-VM
+// context sharing.
+type PatternSummary struct {
+	Kind      string    `json:"kind"`
+	Summary   string    `json:"summary"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// QueryPatternSummaries returns the most recent limit pattern summaries ordered
+// by updated_at descending. limit is clamped to [1, 50].
+func (s *Store) QueryPatternSummaries(ctx context.Context, limit int) ([]PatternSummary, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT kind, summary, updated_at FROM patterns ORDER BY updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: query pattern summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PatternSummary
+	for rows.Next() {
+		var ps PatternSummary
+		var tsMS int64
+		if err := rows.Scan(&ps.Kind, &ps.Summary, &tsMS); err != nil {
+			return nil, fmt.Errorf("store: scan pattern summary: %w", err)
+		}
+		ps.UpdatedAt = time.UnixMilli(tsMS)
+		out = append(out, ps)
+	}
+	return out, rows.Err()
 }
 
 // --- Privacy commands -------------------------------------------------------
@@ -1348,7 +1560,7 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
 // Purge deletes all rows from all tables and then removes the SQLite database
 // file from disk.  The Store must not be used after calling Purge.
 func (s *Store) Purge() error {
-	tables := []string{"sync_cursors", "plugin_events", "ml_predictions", "ml_events", "tasks", "feedback", "suggestions", "patterns", "ai_interactions", "events"}
+	tables := []string{"filtered_log", "merge_log", "training_corpus", "sessions", "sync_cursors", "plugin_events", "ml_predictions", "ml_events", "tasks", "feedback", "suggestions", "patterns", "ai_interactions", "events"}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
 			return fmt.Errorf("store: purge table %s: %w", t, err)
@@ -1412,6 +1624,84 @@ func (s *Store) Export(w io.Writer) error {
 			"created_at": sg.CreatedAt.UTC().Format(time.RFC3339),
 		}); err != nil {
 			return fmt.Errorf("store: encode suggestion: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateV3 extends training_corpus with annotation and dedup columns.
+// All new columns have defaults, making them safe for ALTER TABLE on
+// tables that already contain rows from the V2 merge pipeline.
+func migrateV3(tx *sql.Tx) error {
+	stmts := []string{
+		// Annotation and dedup columns on training_corpus.
+		`ALTER TABLE training_corpus ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE training_corpus ADD COLUMN label TEXT`,
+		`ALTER TABLE training_corpus ADD COLUMN phase TEXT`,
+		`ALTER TABLE training_corpus ADD COLUMN confidence REAL`,
+		`ALTER TABLE training_corpus ADD COLUMN annotated_at INTEGER`,
+		`ALTER TABLE training_corpus ADD COLUMN used_in_finetune INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE training_corpus ADD COLUMN finetune_run_id TEXT`,
+
+		// Dedup index (hour-window dedup for host events).
+		`CREATE INDEX IF NOT EXISTS idx_training_corpus_dedup ON training_corpus(event_type, source, payload_hash)`,
+
+		// Annotation scan index (annotator hot path).
+		`CREATE INDEX IF NOT EXISTS idx_training_corpus_unannotated ON training_corpus(id) WHERE label IS NULL`,
+
+		// Label distribution index (for corpus stats query performance).
+		`CREATE INDEX IF NOT EXISTS idx_training_corpus_label ON training_corpus(label)`,
+
+		// Host-default sentinel session for host-originated corpus rows.
+		`INSERT OR IGNORE INTO sessions (id, started_at, status, merge_outcome, disk_image_path) VALUES ('host-default', 0, 'stopped', 'skipped', '')`,
+
+		// kv_meta table for tracking daemon-level metadata (e.g. last vacuum ts).
+		`CREATE TABLE IF NOT EXISTS kv_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+	}
+
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("exec %q: %w", s[:min(60, len(s))], err)
+		}
+	}
+	return nil
+}
+
+// migrateV4 adds the LoRA fine-tuning tables.
+func migrateV4(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS finetune_runs (
+  id               TEXT PRIMARY KEY,
+  started_at       INTEGER NOT NULL,
+  completed_at     INTEGER,
+  status           TEXT NOT NULL,
+  mode             TEXT NOT NULL,
+  base_model_ver   TEXT NOT NULL,
+  corpus_row_count INTEGER NOT NULL,
+  adapter_path     TEXT,
+  adapter_sha256   TEXT,
+  loss_final       REAL,
+  error_msg        TEXT,
+  retry_count      INTEGER NOT NULL DEFAULT 0
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_finetune_runs_status ON finetune_runs(status)`,
+
+		`CREATE TABLE IF NOT EXISTS ml_adapters (
+  id               TEXT PRIMARY KEY,
+  finetune_run_id  TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  base_model_ver   TEXT NOT NULL,
+  is_active        INTEGER DEFAULT 0,
+  path             TEXT NOT NULL,
+  adapter_sha256   TEXT NOT NULL,
+  deleted_at       INTEGER
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_ml_adapters_active ON ml_adapters(is_active)`,
+	}
+
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("exec %q: %w", s[:min(60, len(s))], err)
 		}
 	}
 	return nil

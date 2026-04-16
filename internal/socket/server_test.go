@@ -30,6 +30,11 @@ func startTestServer(t *testing.T) (*Server, string) {
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "s.sock")
 
+	// Register test topics used by subscription tests.
+	RegisterTopic("test.topic")
+	RegisterTopic("multi.sub")
+	RegisterTopic("count.topic")
+
 	log := newTestLogger()
 	srv := New(sockPath, log)
 

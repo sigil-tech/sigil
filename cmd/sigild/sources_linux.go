@@ -22,7 +22,7 @@ func addPlatformSources(col *collector.Collector, log *slog.Logger) {
 	col.Add(sources.NewAppLifecycleSource())
 	col.Add(sources.NewDisplaySource())
 	col.Add(sources.NewAudioSource())
-	col.Add(sources.NewNetworkSource(true))
+	col.Add(sources.NewNetworkSource())
 	col.Add(sources.NewDesktopSource())
 
 	// Spec 024: Browser context enrichment.
