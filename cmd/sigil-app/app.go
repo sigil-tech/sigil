@@ -759,3 +759,97 @@ func (a *App) UpdateInferenceMode(mode string, acknowledgeRemote bool) error {
 	}
 	return nil
 }
+
+// --- Spec 022 FR-006: VM Launcher ---------------------------------------------
+
+// VMStartRequest mirrors the daemon payload for VMStart.
+type VMStartRequest struct {
+	DiskImagePath string `json:"disk_image_path"`
+	OverlayPath   string `json:"overlay_path,omitempty"`
+	VMDBPath      string `json:"vm_db_path,omitempty"`
+	VsockCID      int    `json:"vsock_cid,omitempty"`
+	FilterVersion string `json:"filter_version,omitempty"`
+}
+
+// VMStart launches a VM session.
+func (a *App) VMStart(req VMStartRequest) (map[string]any, error) {
+	resp, err := a.call("VMStart", req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMStop stops an active VM session.
+func (a *App) VMStop(sessionID string) error {
+	resp, err := a.call("VMStop", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
+// VMStatus returns the current VM session status. An empty session_id returns
+// the active session (if any).
+func (a *App) VMStatus(sessionID string) (map[string]any, error) {
+	resp, err := a.call("VMStatus", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	if len(resp.Payload) == 0 || string(resp.Payload) == "null" {
+		return nil, nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMList returns recent VM sessions (most recent first).
+func (a *App) VMList(limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	resp, err := a.call("VMList", map[string]any{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMMerge triggers the VM-to-host merge for a stopped session.
+func (a *App) VMMerge(sessionID string) (map[string]any, error) {
+	resp, err := a.call("VMMerge", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
