@@ -59,12 +59,22 @@ export function SuggestionCard({ suggestion, onClick }: SuggestionCardProps) {
         {statusIcon(suggestion.status)}
       </span>
       <div class="suggestion-content">
-        <div class="suggestion-title">{suggestion.title}</div>
+        <div class="suggestion-title">
+          {suggestion.category === "team_insight" && (
+            <span class="scope-badge scope-team">Team</span>
+          )}
+          {suggestion.category === "org_insight" && (
+            <span class="scope-badge scope-org">Org</span>
+          )}
+          {suggestion.title}
+        </div>
         <div class="suggestion-meta">
           <span class={`confidence-badge ${confidenceClass(suggestion.confidence)}`}>
             {pct}%
           </span>
-          {suggestion.category && <span>{suggestion.category}</span>}
+          {suggestion.category && suggestion.category !== "team_insight" && suggestion.category !== "org_insight" && (
+            <span>{suggestion.category}</span>
+          )}
           <span>{relativeTime(suggestion.created_at)}</span>
         </div>
       </div>

@@ -134,6 +134,64 @@ func (_m *MockEventReader) QueryEventByID(ctx context.Context, id int64) (event.
 	return r0, r1
 }
 
+// QueryEventDurations provides a mock function with given fields: ctx, kind, payloadField, since
+func (_m *MockEventReader) QueryEventDurations(ctx context.Context, kind event.Kind, payloadField string, since time.Time) (float64, error) {
+	ret := _m.Called(ctx, kind, payloadField, since)
+
+	if len(ret) == 0 {
+		panic("no return value specified for QueryEventDurations")
+	}
+
+	var r0 float64
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, event.Kind, string, time.Time) (float64, error)); ok {
+		return rf(ctx, kind, payloadField, since)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, event.Kind, string, time.Time) float64); ok {
+		r0 = rf(ctx, kind, payloadField, since)
+	} else {
+		r0 = ret.Get(0).(float64)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, event.Kind, string, time.Time) error); ok {
+		r1 = rf(ctx, kind, payloadField, since)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// QueryEventPayloadGroupCount provides a mock function with given fields: ctx, kind, field, since
+func (_m *MockEventReader) QueryEventPayloadGroupCount(ctx context.Context, kind event.Kind, field string, since time.Time) (map[string]int, error) {
+	ret := _m.Called(ctx, kind, field, since)
+
+	if len(ret) == 0 {
+		panic("no return value specified for QueryEventPayloadGroupCount")
+	}
+
+	var r0 map[string]int
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, event.Kind, string, time.Time) (map[string]int, error)); ok {
+		return rf(ctx, kind, field, since)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, event.Kind, string, time.Time) map[string]int); ok {
+		r0 = rf(ctx, kind, field, since)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(map[string]int)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, event.Kind, string, time.Time) error); ok {
+		r1 = rf(ctx, kind, field, since)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // QueryEvents provides a mock function with given fields: ctx, kind, n
 func (_m *MockEventReader) QueryEvents(ctx context.Context, kind event.Kind, n int) ([]event.Event, error) {
 	ret := _m.Called(ctx, kind, n)

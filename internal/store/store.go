@@ -58,6 +58,14 @@ type EventReader interface {
 	QueryLatestPrediction(ctx context.Context, model string) (*PredictionRecord, error)
 	QueryPredictions(ctx context.Context, model string, since time.Time) ([]PredictionRecord, error)
 	QueryPluginEvents(ctx context.Context, pluginName string, since time.Time, limit int) ([]PluginEventRecord, error)
+
+	// QueryEventDurations sums a numeric payload field across events of the given kind.
+	// Used for aggregating idle_seconds from idle events, duration_minutes from calendar events.
+	QueryEventDurations(ctx context.Context, kind event.Kind, payloadField string, since time.Time) (float64, error)
+
+	// QueryEventPayloadGroupCount groups events by a payload field value and returns counts.
+	// Used for browser_categories (group by category), top_apps (group by window_class).
+	QueryEventPayloadGroupCount(ctx context.Context, kind event.Kind, field string, since time.Time) (map[string]int, error)
 }
 
 // EventWriter is the write subset of Store used by the collector and notifier.
@@ -109,6 +117,17 @@ func Open(path string) (*Store, error) {
 // Close releases the underlying database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// Exec runs a raw SQL statement. Used by internal components (fleet reporter)
+// that need to create/manage their own tables.
+func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
+
+// QueryRow runs a raw SQL query returning a single row.
+func (s *Store) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
 }
 
 // TaskMetrics holds aggregated task lifecycle metrics for fleet reporting.
@@ -1093,6 +1112,48 @@ func (s *Store) QueryMLStats(ctx context.Context, since time.Time) (MLStats, err
 	}
 
 	return st, nil
+}
+
+// QueryEventDurations sums a numeric payload field across events of the given kind
+// since the given time. Returns 0 if no matching events exist.
+func (s *Store) QueryEventDurations(ctx context.Context, kind event.Kind, payloadField string, since time.Time) (float64, error) {
+	var total sql.NullFloat64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(CAST(json_extract(payload, ?) AS REAL)), 0)
+		 FROM events WHERE kind = ? AND ts >= ?`,
+		"$."+payloadField, string(kind), since.UnixMilli(),
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("store: query event durations: %w", err)
+	}
+	return total.Float64, nil
+}
+
+// QueryEventPayloadGroupCount groups events by a string payload field value
+// and returns the count per group, ordered by count descending, limited to 50.
+func (s *Store) QueryEventPayloadGroupCount(ctx context.Context, kind event.Kind, field string, since time.Time) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT json_extract(payload, ?) as grp, COUNT(*) as cnt
+		 FROM events
+		 WHERE kind = ? AND ts >= ? AND json_extract(payload, ?) IS NOT NULL
+		 GROUP BY grp ORDER BY cnt DESC LIMIT 50`,
+		"$."+field, string(kind), since.UnixMilli(), "$."+field,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query event payload groups: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var grp string
+		var cnt int
+		if err := rows.Scan(&grp, &cnt); err != nil {
+			return nil, fmt.Errorf("store: scan payload group: %w", err)
+		}
+		result[grp] = cnt
+	}
+	return result, rows.Err()
 }
 
 // scanTaskRecord scans a single task row from a *sql.Row.

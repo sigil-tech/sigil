@@ -47,9 +47,9 @@ import (
 	"github.com/sigil-tech/sigil/internal/network"
 	"github.com/sigil-tech/sigil/internal/notifier"
 	"github.com/sigil-tech/sigil/internal/plugin"
-	signsync "github.com/sigil-tech/sigil/internal/sync"
 	"github.com/sigil-tech/sigil/internal/socket"
 	"github.com/sigil-tech/sigil/internal/store"
+	signsync "github.com/sigil-tech/sigil/internal/sync"
 	"github.com/sigil-tech/sigil/internal/task"
 )
 
@@ -457,11 +457,16 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	log.Info("actuator registry started")
 
-	// --- Fleet ---------------------------------------------------------------
-	// Fleet is now a cloud service (sigil-tech/sigil-fleet). The daemon
-	// no longer imports it as a Go library. Fleet handlers return the
-	// configured endpoint so clients can interact with it directly.
-	registerFleetHandlers(srv, cfg)
+	// --- Fleet Reporter ------------------------------------------------------
+	// Fleet is a cloud service (sigil-tech/sigil-fleet). The reporter computes
+	// anonymized aggregates from the local store and POSTs them to the fleet API.
+	var reporter *fleetReporter
+	if cfg.fileCfg.Cloud.APIKey != "" {
+		reporter = newFleetReporter(db, cfg, ntf, log)
+		// Reporter goroutine — sends hourly aggregates to fleet.
+		go reporter.run(ctx)
+	}
+	registerFleetHandlers(srv, reporter)
 
 	// --- Sync Agent ---------------------------------------------------------
 	var syncAgent *signsync.Agent
@@ -2276,23 +2281,40 @@ func generateToken() (string, error) {
 
 // --- Fleet socket handlers --------------------------------------------------
 
-func registerFleetHandlers(srv *socket.Server, cfg daemonConfig) {
-	srv.Handle("fleet-preview", func(_ context.Context, _ socket.Request) socket.Response {
-		if !cfg.fileCfg.Fleet.Enabled {
-			return socket.Response{Error: "fleet is not enabled"}
+func registerFleetHandlers(srv *socket.Server, r *fleetReporter) {
+	srv.Handle("fleet-preview", func(ctx context.Context, _ socket.Request) socket.Response {
+		if r == nil {
+			return socket.Response{Error: "fleet not active — sign in to Sigil Cloud with a Team or Enterprise account"}
 		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
-			"endpoint": cfg.fileCfg.Fleet.Endpoint,
-			"enabled":  true,
-		})}
+		report, err := r.computeReport(ctx)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("compute report: %v", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(report)}
 	})
 
-	srv.Handle("fleet-opt-out", func(_ context.Context, _ socket.Request) socket.Response {
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"ok": true})}
-	})
+	// No fleet-opt-out handler — fleet is an organizational decision, not individual.
 
 	srv.Handle("fleet-policy", func(_ context.Context, _ socket.Request) socket.Response {
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
+		if r == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
+		}
+		r.mu.Lock()
+		policy := r.cachedPolicy
+		r.mu.Unlock()
+		if policy == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"policy": nil})}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(policy)}
+	})
+
+	srv.Handle("fleet-status", func(_ context.Context, _ socket.Request) socket.Response {
+		if r == nil {
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+				"active": false,
+			})}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(r.status())}
 	})
 }
 

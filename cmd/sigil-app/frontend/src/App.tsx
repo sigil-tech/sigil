@@ -10,6 +10,7 @@ import { Settings } from "./views/Settings";
 import { Analytics } from "./views/Analytics";
 import { Timeline } from "./views/Timeline";
 import { Wizard } from "./views/Wizard";
+import { Team } from "./views/Team";
 
 // Type stubs — Wails generates the real bindings at build time.
 // These are resolved from ../wailsjs/ by the Wails runtime.
@@ -33,7 +34,7 @@ declare const window: Window & {
   };
 };
 
-type View = "list" | "detail" | "summary" | "timeline" | "ask" | "plugins" | "analytics" | "settings" | "wizard";
+type View = "list" | "detail" | "summary" | "timeline" | "ask" | "plugins" | "analytics" | "team" | "settings" | "wizard";
 type Filter = "all" | "pending" | "accepted" | "dismissed";
 
 export interface Suggestion {
@@ -217,6 +218,7 @@ export function App() {
         {view === "ask" && <AskSigil />}
         {view === "plugins" && <Plugins />}
         {view === "analytics" && <Analytics />}
+        {view === "team" && <Team />}
         {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} connected={connected} />}
       </main>
 
@@ -250,6 +252,12 @@ export function App() {
           onClick={() => setView("analytics")}
         >
           Analytics
+        </button>
+        <button
+          class={`tab ${view === "team" ? "active" : ""}`}
+          onClick={() => setView("team")}
+        >
+          Team
         </button>
         <button
           class={`tab ${view === "settings" ? "active" : ""}`}

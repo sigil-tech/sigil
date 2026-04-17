@@ -2121,3 +2121,118 @@ body {
   border-radius: 8px;
   background: rgba(52, 199, 89, 0.1);
 }
+
+/* --- Scope Badges -------------------------------------------------------- */
+
+.scope-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.scope-team {
+  background: rgba(0, 113, 227, 0.12);
+  color: var(--accent);
+}
+
+.scope-org {
+  background: rgba(139, 92, 246, 0.12);
+  color: #8b5cf6;
+}
+
+/* --- Team View ----------------------------------------------------------- */
+
+.team-view {
+  padding: 16px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.team-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.team-name {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.team-org {
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+.team-connection {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+
+.team-section {
+  margin-bottom: 20px;
+}
+
+.team-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-secondary);
+  margin-bottom: 8px;
+}
+
+.team-status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.team-stat {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.team-stat-label {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-secondary);
+  margin-bottom: 2px;
+}
+
+.team-stat-value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.team-stat-mono {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+.team-preview {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-family: monospace;
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 300px;
+  overflow-y: auto;
+}

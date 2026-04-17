@@ -607,25 +607,22 @@ export function Settings({ onRerunSetup, connected }: { onRerunSetup?: () => voi
       <div class="settings-section">
         <h3>Team Insights</h3>
         <div class="settings-section-desc">
-          Anonymized aggregate metrics shared with your team. Requires a Team or
-          Enterprise account. No raw data leaves your machine.
+          Anonymized aggregate metrics shared with your team. Activates
+          automatically with a Team or Enterprise subscription.
         </div>
         <div class="settings-card">
           <div class="settings-row">
-            <div class="settings-label-group">
-              <span class="settings-label">Enabled</span>
-              <div class="settings-label-sub">
-                Auto-configured when signed in with a Team account
-              </div>
-            </div>
-            <div class="toggle-switch">
-              <Toggle
-                label=""
-                checked={fleet.enabled ?? false}
-                onChange={(v) => update("fleet.enabled", v)}
-              />
-            </div>
+            <span class="settings-label">Status</span>
+            <span class="settings-value-text">
+              {fleet.enabled ? "Active" : "Inactive — requires Team plan"}
+            </span>
           </div>
+          {fleet.endpoint && (
+            <div class="settings-row">
+              <span class="settings-label">Endpoint</span>
+              <span class="settings-value-text">{fleet.endpoint}</span>
+            </div>
+          )}
         </div>
       </div>
 
