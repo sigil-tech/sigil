@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { StatusBar } from "./components/StatusBar";
 import { UpdateBanner, UpdateInfoPayload } from "./components/UpdateBanner";
+import { AppRail, type RailView } from "./components/AppRail";
 import { SuggestionList } from "./views/SuggestionList";
 import { SuggestionDetail } from "./views/SuggestionDetail";
 import { DaySummary } from "./views/DaySummary";
@@ -11,6 +12,8 @@ import { Analytics } from "./views/Analytics";
 import { Timeline } from "./views/Timeline";
 import { Wizard } from "./views/Wizard";
 import { Team } from "./views/Team";
+import { Audit } from "./views/Audit";
+import { VMLauncher } from "./views/VMLauncher";
 
 // Type stubs — Wails generates the real bindings at build time.
 // These are resolved from ../wailsjs/ by the Wails runtime.
@@ -34,7 +37,7 @@ declare const window: Window & {
   };
 };
 
-type View = "list" | "detail" | "summary" | "timeline" | "ask" | "plugins" | "analytics" | "team" | "settings" | "wizard";
+type View = "list" | "detail" | "summary" | "timeline" | "ask" | "plugins" | "analytics" | "team" | "settings" | "wizard" | "audit" | "vm";
 type Filter = "all" | "pending" | "accepted" | "dismissed";
 
 export interface Suggestion {
@@ -185,8 +188,21 @@ export function App() {
     );
   }
 
+  // AppRail uses a subset of views. Detail is a sub-state of "list", so the
+  // rail should highlight "list" when a detail is open. (Wizard returns
+  // early above, so it is never seen here.)
+  const railView: RailView =
+    view === "detail" ? "list" : (view as RailView);
+
+  const handleRailSelect = (v: RailView) => {
+    setView(v as View);
+    if (v === "list") {
+      setSelectedId(null);
+    }
+  };
+
   return (
-    <div class="app">
+    <div class="app app--with-rail">
       <StatusBar connected={connected} currentTask={currentTask} />
 
       {updateInfo && (
@@ -196,76 +212,37 @@ export function App() {
         />
       )}
 
-      <main class="main-content">
-        {view === "list" && (
-          <SuggestionList
-            suggestions={filteredSuggestions}
-            allSuggestions={suggestions}
-            filter={filter}
-            onFilterChange={setFilter}
-            onSelect={handleSelect}
-          />
-        )}
-        {view === "detail" && selectedSuggestion && (
-          <SuggestionDetail
-            suggestion={selectedSuggestion}
-            onBack={handleBack}
-            onUpdate={fetchSuggestions}
-          />
-        )}
-        {view === "summary" && <DaySummary onViewTimeline={() => setView("timeline")} />}
-        {view === "timeline" && <Timeline />}
-        {view === "ask" && <AskSigil />}
-        {view === "plugins" && <Plugins />}
-        {view === "analytics" && <Analytics />}
-        {view === "team" && <Team />}
-        {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} connected={connected} />}
-      </main>
+      <div class="app-body">
+        <AppRail activeView={railView} onSelect={handleRailSelect} />
 
-      <nav class="tab-bar">
-        <button
-          class={`tab ${view === "list" ? "active" : ""}`}
-          onClick={() => setView("list")}
-        >
-          Suggestions
-        </button>
-        <button
-          class={`tab ${view === "summary" ? "active" : ""}`}
-          onClick={() => setView("summary")}
-        >
-          Summary
-        </button>
-        <button
-          class={`tab ${view === "ask" ? "active" : ""}`}
-          onClick={() => setView("ask")}
-        >
-          Ask
-        </button>
-        <button
-          class={`tab ${view === "plugins" ? "active" : ""}`}
-          onClick={() => setView("plugins")}
-        >
-          Plugins
-        </button>
-        <button
-          class={`tab ${view === "analytics" ? "active" : ""}`}
-          onClick={() => setView("analytics")}
-        >
-          Analytics
-        </button>
-        <button
-          class={`tab ${view === "team" ? "active" : ""}`}
-          onClick={() => setView("team")}
-        >
-          Team
-        </button>
-        <button
-          class={`tab ${view === "settings" ? "active" : ""}`}
-          onClick={() => setView("settings")}
-        >
-          &#9881; Settings
-        </button>
-      </nav>
+        <main class="main-content">
+          {view === "list" && (
+            <SuggestionList
+              suggestions={filteredSuggestions}
+              allSuggestions={suggestions}
+              filter={filter}
+              onFilterChange={setFilter}
+              onSelect={handleSelect}
+            />
+          )}
+          {view === "detail" && selectedSuggestion && (
+            <SuggestionDetail
+              suggestion={selectedSuggestion}
+              onBack={handleBack}
+              onUpdate={fetchSuggestions}
+            />
+          )}
+          {view === "summary" && <DaySummary onViewTimeline={() => setView("timeline")} />}
+          {view === "timeline" && <Timeline />}
+          {view === "ask" && <AskSigil />}
+          {view === "plugins" && <Plugins />}
+          {view === "analytics" && <Analytics />}
+          {view === "team" && <Team />}
+          {view === "settings" && <Settings onRerunSetup={() => setView("wizard")} connected={connected} />}
+          {view === "audit" && <Audit />}
+          {view === "vm" && <VMLauncher />}
+        </main>
+      </div>
     </div>
   );
 }

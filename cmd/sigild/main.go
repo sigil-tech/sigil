@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -39,10 +40,13 @@ import (
 	"github.com/sigil-tech/sigil/internal/collector"
 	"github.com/sigil-tech/sigil/internal/collector/sources"
 	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/corpus"
 	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/finetuner"
 	"github.com/sigil-tech/sigil/internal/inference"
 	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/mcp"
+	"github.com/sigil-tech/sigil/internal/merge"
 	"github.com/sigil-tech/sigil/internal/ml"
 	"github.com/sigil-tech/sigil/internal/network"
 	"github.com/sigil-tech/sigil/internal/notifier"
@@ -51,6 +55,7 @@ import (
 	"github.com/sigil-tech/sigil/internal/store"
 	signsync "github.com/sigil-tech/sigil/internal/sync"
 	"github.com/sigil-tech/sigil/internal/task"
+	"github.com/sigil-tech/sigil/internal/vm"
 )
 
 func main() {
@@ -487,6 +492,19 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 		log.Info("sync agent started", "api_url", cfg.fileCfg.Sync.APIURL)
 	}
 	registerSyncHandlers(srv, syncAgent)
+
+	// --- VM lifecycle handlers -----------------------------------------------
+	registerVMHandlers(srv, db, cfg)
+
+	// --- Corpus handlers -----------------------------------------------------
+	registerCorpusHandlers(srv, db, log)
+
+	// --- Finetuner handlers --------------------------------------------------
+	ft := finetuner.New(db.DB(), nil, cfg.fileCfg, log) // backend nil = disabled until configured
+	registerFinetunerHandlers(srv, ft)
+
+	// --- Control plane handlers ----------------------------------------------
+	registerControlPlaneHandlers(srv, cfg.fileCfg, db, log)
 
 	if err := srv.Start(ctx); err != nil {
 		return fmt.Errorf("start socket: %w", err)
@@ -2348,5 +2366,562 @@ func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
 		}
 		agent.Resume()
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{"paused": false})}
+	})
+}
+
+// registerVMHandlers registers VM lifecycle and merge socket handlers.
+// vmMgr is created from the store's raw *sql.DB so that sessions table
+// operations stay outside the store.ReadWriter abstraction.
+func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
+	vmMgr := vm.NewManager(st.DB())
+
+	srv.Handle("VMStart", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			DiskImagePath string `json:"disk_image_path"`
+			OverlayPath   string `json:"overlay_path"`
+			VMDBPath      string `json:"vm_db_path"`
+			VsockCID      int    `json:"vsock_cid"`
+			FilterVersion string `json:"filter_version"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+
+		sess, err := vmMgr.Start(ctx, vm.StartRequest{
+			DiskImagePath: p.DiskImagePath,
+			OverlayPath:   p.OverlayPath,
+			VMDBPath:      p.VMDBPath,
+			VsockCID:      p.VsockCID,
+			FilterVersion: p.FilterVersion,
+		})
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(sess)}
+	})
+
+	srv.Handle("VMStop", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+		if err := vmMgr.Stop(ctx, p.SessionID); err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true}
+	})
+
+	srv.Handle("VMStatus", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+
+		// If no session_id provided, return active session.
+		if p.SessionID == "" {
+			sess, err := vmMgr.ActiveSession(ctx)
+			if err != nil {
+				return socket.Response{Error: err.Error()}
+			}
+			if sess == nil {
+				return socket.Response{OK: true, Payload: socket.MarshalPayload(nil)}
+			}
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(sess)}
+		}
+
+		sess, err := vmMgr.Status(ctx, p.SessionID)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(sess)}
+	})
+
+	srv.Handle("VMList", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal(req.Payload, &p)
+
+		sessions, err := vmMgr.List(ctx, p.Limit)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(sessions)}
+	})
+
+	srv.Handle("VMMerge", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload: " + err.Error()}
+		}
+
+		// Validate session preconditions (FR-016).
+		sess, err := vmMgr.Status(ctx, p.SessionID)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		// Must be stopping or stopped.
+		if sess.Status != vm.StateStopping && sess.Status != vm.StateStopped {
+			return socket.Response{Error: "merge_precondition_failed: session not in stopping/stopped state"}
+		}
+
+		// Short-circuit: already merged.
+		if sess.MergeOutcome == vm.MergeOutcomeComplete {
+			result := merge.MergeResult{Status: merge.MergeStatusAlreadyComplete}
+			return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+		}
+
+		// Reject quarantined sessions.
+		if strings.Contains(sess.VMDBPath, ".quarantine") {
+			return socket.Response{Error: "merge_precondition_failed: session quarantined"}
+		}
+
+		result, err := merge.Merge(ctx, st.DB(), sess.VMDBPath, p.SessionID, cfg.fileCfg)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+
+		// Update session merge outcome.
+		outcome := vm.MergeOutcomePending
+		switch result.Status {
+		case merge.MergeStatusComplete:
+			outcome = vm.MergeOutcomeComplete
+		case merge.MergeStatusPartial:
+			outcome = vm.MergeOutcomePartial
+		case merge.MergeStatusFailed:
+			outcome = vm.MergeOutcomeFailed
+		}
+		if outcome != vm.MergeOutcomePending {
+			_ = vmMgr.Finalize(ctx, p.SessionID, outcome)
+		}
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	srv.Handle("merge-log", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(req.Payload, &p)
+
+		var (
+			rows *sql.Rows
+			err  error
+		)
+		if p.SessionID != "" {
+			rows, err = st.DB().QueryContext(ctx,
+				`SELECT id, session_id, vm_db_path, started_at, completed_at, status, rows_merged, rows_filtered, checkpoint, filter_version, error_msg
+				 FROM merge_log WHERE session_id = ? ORDER BY started_at DESC`, p.SessionID)
+		} else {
+			rows, err = st.DB().QueryContext(ctx,
+				`SELECT id, session_id, vm_db_path, started_at, completed_at, status, rows_merged, rows_filtered, checkpoint, filter_version, error_msg
+				 FROM merge_log ORDER BY started_at DESC LIMIT 20`)
+		}
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		defer rows.Close()
+
+		type mergeLogEntry struct {
+			ID            int64   `json:"id"`
+			SessionID     string  `json:"session_id"`
+			VMDBPath      string  `json:"vm_db_path"`
+			StartedAt     int64   `json:"started_at"`
+			CompletedAt   *int64  `json:"completed_at,omitempty"`
+			Status        string  `json:"status"`
+			RowsMerged    int     `json:"rows_merged"`
+			RowsFiltered  int     `json:"rows_filtered"`
+			Checkpoint    int     `json:"checkpoint"`
+			FilterVersion string  `json:"filter_version"`
+			ErrorMsg      *string `json:"error_msg,omitempty"`
+		}
+
+		var entries []mergeLogEntry
+		for rows.Next() {
+			var e mergeLogEntry
+			var completedAt sql.NullInt64
+			var errorMsg sql.NullString
+			if err := rows.Scan(&e.ID, &e.SessionID, &e.VMDBPath, &e.StartedAt, &completedAt,
+				&e.Status, &e.RowsMerged, &e.RowsFiltered, &e.Checkpoint, &e.FilterVersion, &errorMsg); err != nil {
+				return socket.Response{Error: err.Error()}
+			}
+			if completedAt.Valid {
+				e.CompletedAt = &completedAt.Int64
+			}
+			if errorMsg.Valid {
+				e.ErrorMsg = &errorMsg.String
+			}
+			entries = append(entries, e)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(entries)}
+	})
+
+	srv.Handle("merge-purge", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil || p.SessionID == "" {
+			return socket.Response{Error: "session_id required"}
+		}
+
+		// Delete training_corpus rows for this session.
+		res, err := st.DB().ExecContext(ctx,
+			`DELETE FROM training_corpus WHERE origin_session = ?`, p.SessionID)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		deleted, _ := res.RowsAffected()
+
+		// Update merge_log status to purged.
+		_, _ = st.DB().ExecContext(ctx,
+			`UPDATE merge_log SET status = 'purged' WHERE session_id = ?`, p.SessionID)
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"rows_deleted": deleted,
+		})}
+	})
+}
+
+// --- Corpus socket handlers --------------------------------------------------
+
+func registerCorpusHandlers(srv *socket.Server, st *store.Store, log *slog.Logger) {
+	// corpus-stats — return aggregated corpus statistics.
+	srv.Handle("corpus-stats", func(ctx context.Context, _ socket.Request) socket.Response {
+		stats, err := corpus.QueryStats(ctx, st.DB())
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("corpus stats: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(stats)}
+	})
+
+	// corpus-purge — delete corpus rows before a given timestamp.
+	srv.Handle("corpus-purge", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			BeforeTS int64 `json:"before_ts"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil || p.BeforeTS <= 0 {
+			return socket.Response{Error: "invalid payload: requires before_ts (unix ms)"}
+		}
+		result, err := corpus.Purge(ctx, st.DB(), p.BeforeTS)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("corpus purge: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// corpus-export — export annotated corpus rows as JSONL.
+	srv.Handle("corpus-export", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			OutputPath string `json:"output_path"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil || p.OutputPath == "" {
+			return socket.Response{Error: "invalid payload: requires output_path"}
+		}
+		count, err := corpus.Export(ctx, st.DB(), p.OutputPath, nil)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("corpus export: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"rows_exported": count,
+			"output_path":   p.OutputPath,
+		})}
+	})
+}
+
+// --- Finetuner socket handlers -----------------------------------------------
+
+func registerFinetunerHandlers(srv *socket.Server, ft *finetuner.Finetuner) {
+	// ml-finetune — trigger an immediate fine-tune run.
+	srv.Handle("ml-finetune", func(ctx context.Context, _ socket.Request) socket.Response {
+		result, err := ft.RunNow(ctx)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	})
+
+	// ml-status — return finetuner status.
+	srv.Handle("ml-status", func(ctx context.Context, _ socket.Request) socket.Response {
+		status, err := ft.Status(ctx)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("ml status: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(status)}
+	})
+
+	// ml-history — return fine-tune run history.
+	srv.Handle("ml-history", func(ctx context.Context, _ socket.Request) socket.Response {
+		history, err := ft.History(ctx, 20)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("ml history: %s", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(history)}
+	})
+
+	// ml-rollback — rollback to a previous adapter.
+	srv.Handle("ml-rollback", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			AdapterID string `json:"adapter_id"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil || p.AdapterID == "" {
+			return socket.Response{Error: "invalid payload: requires adapter_id"}
+		}
+		if err := ft.Rollback(ctx, p.AdapterID); err != nil {
+			return socket.Response{Error: fmt.Sprintf("ml rollback: %s", err)}
+		}
+		return socket.Response{OK: true}
+	})
+}
+
+// --- Control plane socket handlers -------------------------------------------
+
+// ProtocolVersion is the socket protocol version. Bump when incompatible
+// changes are made to existing methods. Add new methods without bumping.
+const ProtocolVersion = 2
+
+// DaemonVersion is the daemon's semantic version.
+const DaemonVersion = "0.5.0"
+
+func registerControlPlaneHandlers(srv *socket.Server, cfg *config.Config, st *store.Store, log *slog.Logger) {
+	// version-handshake — protocol version negotiation.
+	srv.Handle("version-handshake", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			AppVersion  string `json:"app_version"`
+			MinProtocol int    `json:"min_protocol"`
+		}
+		_ = json.Unmarshal(req.Payload, &p)
+
+		compatible := ProtocolVersion >= p.MinProtocol || p.MinProtocol == 0
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"daemon_version":   DaemonVersion,
+			"protocol_version": ProtocolVersion,
+			"compatible":       compatible,
+		})}
+	})
+
+	// config-get — return current daemon configuration.
+	srv.Handle("config-get", func(ctx context.Context, _ socket.Request) socket.Response {
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"inference_mode":  cfg.Inference.Mode,
+			"notifier_level":  cfg.Notifier.LevelOrDefault(),
+			"retention_days":  cfg.Retention,
+			"fleet_enabled":   cfg.Fleet.Enabled,
+			"corpus":          cfg.Corpus,
+			"annotation_mode": cfg.Corpus.AnnotationModeOrDefault(),
+		})}
+	})
+
+	// config-update — update daemon config with audit logging.
+	srv.Handle("config-update", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Section                       string         `json:"section"`
+			Values                        map[string]any `json:"values"`
+			AcknowledgeRemoteTransmission bool           `json:"acknowledge_remote_transmission"`
+		}
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return socket.Response{Error: "invalid payload"}
+		}
+
+		// Validate section.
+		allowedSections := map[string]bool{
+			"observer":  true,
+			"inference": true,
+			"corpus":    true,
+			"notifier":  true,
+		}
+		if !allowedSections[p.Section] {
+			return socket.Response{Error: fmt.Sprintf("invalid section: %s", p.Section)}
+		}
+
+		// Guard against enabling remote inference without acknowledgement.
+		if p.Section == "inference" {
+			if mode, ok := p.Values["mode"].(string); ok {
+				if mode == "remote" || mode == "remotefirst" || mode == "hosted" {
+					if !p.AcknowledgeRemoteTransmission {
+						return socket.Response{Error: "ERR_REMOTE_NOT_ACKNOWLEDGED: switching to remote inference requires acknowledge_remote_transmission=true"}
+					}
+				}
+			}
+		}
+
+		// Write audit log entry.
+		valuesJSON, _ := json.Marshal(p.Values)
+		actionID := fmt.Sprintf("config-update-%s-%d", p.Section, time.Now().UnixMilli())
+		description := fmt.Sprintf("ConfigUpdate section=%s values=%s", p.Section, string(valuesJSON))
+		_, _ = st.DB().ExecContext(ctx,
+			`INSERT INTO action_log (action_id, description, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+			actionID, description, time.Now().UnixMilli(), time.Now().Add(365*24*time.Hour).UnixMilli(),
+		)
+
+		log.Info("config update",
+			"section", p.Section,
+			"values", string(valuesJSON),
+		)
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"applied": true,
+			"section": p.Section,
+		})}
+	})
+
+	// audit-corpus — return corpus metadata for the audit viewer.
+	srv.Handle("audit-corpus", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Limit  int `json:"limit"`
+			Offset int `json:"offset"`
+		}
+		_ = json.Unmarshal(req.Payload, &p)
+		if p.Limit <= 0 || p.Limit > 1000 {
+			p.Limit = 100
+		}
+
+		rows, err := st.DB().QueryContext(ctx,
+			`SELECT id, ts, origin, event_type, source, payload_hash, label, phase, confidence
+			 FROM training_corpus ORDER BY ts DESC LIMIT ? OFFSET ?`,
+			p.Limit, p.Offset,
+		)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("audit-corpus: %s", err)}
+		}
+		defer rows.Close()
+
+		type auditRow struct {
+			ID          int64    `json:"id"`
+			TS          int64    `json:"ts"`
+			Origin      string   `json:"origin"`
+			EventType   string   `json:"event_type"`
+			Source      string   `json:"source"`
+			PayloadHash string   `json:"payload_hash"`
+			Label       *string  `json:"label,omitempty"`
+			Phase       *string  `json:"phase,omitempty"`
+			Confidence  *float64 `json:"confidence,omitempty"`
+		}
+		var out []auditRow
+		for rows.Next() {
+			var r auditRow
+			var label, phase sql.NullString
+			var conf sql.NullFloat64
+			if err := rows.Scan(&r.ID, &r.TS, &r.Origin, &r.EventType, &r.Source, &r.PayloadHash, &label, &phase, &conf); err != nil {
+				continue
+			}
+			if label.Valid {
+				r.Label = &label.String
+			}
+			if phase.Valid {
+				r.Phase = &phase.String
+			}
+			if conf.Valid {
+				r.Confidence = &conf.Float64
+			}
+			out = append(out, r)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(out)}
+	})
+
+	// audit-merge-log — return merge log entries.
+	srv.Handle("audit-merge-log", func(ctx context.Context, req socket.Request) socket.Response {
+		var p struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal(req.Payload, &p)
+		if p.Limit <= 0 {
+			p.Limit = 50
+		}
+
+		rows, err := st.DB().QueryContext(ctx,
+			`SELECT id, session_id, started_at, completed_at, status, rows_merged, rows_filtered, error_msg
+			 FROM merge_log ORDER BY started_at DESC LIMIT ?`, p.Limit,
+		)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("audit-merge-log: %s", err)}
+		}
+		defer rows.Close()
+
+		type mergeEntry struct {
+			ID           int64  `json:"id"`
+			SessionID    string `json:"session_id"`
+			StartedAt    int64  `json:"started_at"`
+			CompletedAt  int64  `json:"completed_at,omitempty"`
+			Status       string `json:"status"`
+			RowsMerged   int    `json:"rows_merged"`
+			RowsFiltered int    `json:"rows_filtered"`
+			Error        string `json:"error,omitempty"`
+		}
+		var out []mergeEntry
+		for rows.Next() {
+			var e mergeEntry
+			var completedAt sql.NullInt64
+			var errorMsg sql.NullString
+			if err := rows.Scan(&e.ID, &e.SessionID, &e.StartedAt, &completedAt, &e.Status, &e.RowsMerged, &e.RowsFiltered, &errorMsg); err != nil {
+				continue
+			}
+			if completedAt.Valid {
+				e.CompletedAt = completedAt.Int64
+			}
+			if errorMsg.Valid {
+				e.Error = errorMsg.String
+			}
+			out = append(out, e)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(out)}
+	})
+
+	// audit-filtered-log — return filtered log entries.
+	srv.Handle("audit-filtered-log", func(ctx context.Context, req socket.Request) socket.Response {
+		rows, err := st.DB().QueryContext(ctx,
+			`SELECT id, session_id, ts, event_type, filter_rule, excluded_reason, payload_hash
+			 FROM filtered_log ORDER BY ts DESC LIMIT 200`,
+		)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("audit-filtered-log: %s", err)}
+		}
+		defer rows.Close()
+
+		type filterEntry struct {
+			ID             int64  `json:"id"`
+			SessionID      string `json:"session_id"`
+			TS             int64  `json:"ts"`
+			EventType      string `json:"event_type"`
+			FilterRule     string `json:"filter_rule"`
+			ExcludedReason string `json:"excluded_reason"`
+			PayloadHash    string `json:"payload_hash"`
+		}
+		var out []filterEntry
+		for rows.Next() {
+			var e filterEntry
+			if err := rows.Scan(&e.ID, &e.SessionID, &e.TS, &e.EventType, &e.FilterRule, &e.ExcludedReason, &e.PayloadHash); err != nil {
+				continue
+			}
+			out = append(out, e)
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(out)}
+	})
+
+	// report-weekly — aggregate weekly report data.
+	srv.Handle("report-weekly", func(ctx context.Context, req socket.Request) socket.Response {
+		// Compute simple aggregates over the last 7 days.
+		weekAgoMS := time.Now().AddDate(0, 0, -7).UnixMilli()
+
+		var totalEvents, totalFinetuneRuns int
+		_ = st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM events WHERE ts > ?`, weekAgoMS,
+		).Scan(&totalEvents)
+		_ = st.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM finetune_runs WHERE started_at > ? AND status = 'complete'`, weekAgoMS,
+		).Scan(&totalFinetuneRuns)
+
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(map[string]any{
+			"week_start":       time.Now().AddDate(0, 0, -7).Format("2006-01-02"),
+			"total_events":     totalEvents,
+			"finetune_summary": map[string]any{"ran": totalFinetuneRuns > 0, "runs_this_week": totalFinetuneRuns},
+		})}
 	})
 }

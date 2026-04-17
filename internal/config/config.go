@@ -37,6 +37,9 @@ type Config struct {
 	CloudSync CloudSyncConfig         `toml:"cloud_sync" json:"cloud_sync"`
 	Sync      SyncConfig              `toml:"sync" json:"sync"`
 	Sources   SourcesConfig           `toml:"sources" json:"sources"`
+	VM        VMConfig                `toml:"vm" json:"vm"`
+	Merge     MergeConfig             `toml:"merge" json:"merge"`
+	Corpus    CorpusConfig            `toml:"corpus" json:"corpus"`
 }
 
 // SourcesConfig controls per-source enable/disable and poll intervals.
@@ -338,6 +341,191 @@ type RetentionConfig struct {
 	RawEventDays int `toml:"raw_event_days" json:"raw_event_days"`
 }
 
+// VMConfig is the [vm] section of config.Config.
+// It is read by both host and guest sigild instances.
+type VMConfig struct {
+	Mode                string   `toml:"mode" json:"mode"`                                   // "host" | "vm" | "" (disabled)
+	Enabled             bool     `toml:"enabled" json:"enabled"`                             // host: start HostContextServer
+	DBPath              string   `toml:"db_path" json:"db_path"`                             // vm: SQLite path
+	VsockControlPort    int      `toml:"vsock_control_port" json:"vsock_control_port"`       // default 7700
+	VsockInferencePort  int      `toml:"vsock_inference_port" json:"vsock_inference_port"`   // default 7701
+	Denylist            []string `toml:"denylist" json:"denylist,omitempty"`                 // glob patterns for process name filtering
+	RateLimitPerSource  int      `toml:"rate_limit_per_source" json:"rate_limit_per_source"` // default 1000
+	InferenceQueueDepth int      `toml:"inference_queue_depth" json:"inference_queue_depth"` // default 50
+}
+
+// VMControlPort returns the vsock control port, defaulting to 7700.
+func (v VMConfig) VMControlPort() int {
+	if v.VsockControlPort == 0 {
+		return 7700
+	}
+	return v.VsockControlPort
+}
+
+// VMInferencePort returns the vsock inference port, defaulting to 7701.
+func (v VMConfig) VMInferencePort() int {
+	if v.VsockInferencePort == 0 {
+		return 7701
+	}
+	return v.VsockInferencePort
+}
+
+// RateLimit returns the per-source rate limit, defaulting to 1000.
+func (v VMConfig) RateLimit() int {
+	if v.RateLimitPerSource == 0 {
+		return 1000
+	}
+	return v.RateLimitPerSource
+}
+
+// QueueDepth returns the inference queue depth, defaulting to 50.
+func (v VMConfig) QueueDepth() int {
+	if v.InferenceQueueDepth == 0 {
+		return 50
+	}
+	return v.InferenceQueueDepth
+}
+
+// MergeConfig is the [merge] section of config.Config.
+// It controls the VM-to-host merge pipeline behavior.
+type MergeConfig struct {
+	Denylist                []string `toml:"denylist" json:"denylist,omitempty"`
+	MaxDBSizeMB             int      `toml:"max_db_size_mb" json:"max_db_size_mb"`                       // default 512
+	SessionBudgetMB         int      `toml:"session_budget_mb" json:"session_budget_mb"`                 // default 256
+	MaxRowPayloadBytes      int      `toml:"max_row_payload_bytes" json:"max_row_payload_bytes"`         // default 65536
+	QuarantineRetentionDays int      `toml:"quarantine_retention_days" json:"quarantine_retention_days"` // default 30
+	FilterVersion           string   `toml:"filter_version" json:"filter_version"`                       // semantic version of the ruleset
+	BatchSize               int      `toml:"batch_size" json:"batch_size"`                               // default 500
+}
+
+// MaxDBSize returns the max VM DB size in bytes, defaulting to 512MB.
+func (m MergeConfig) MaxDBSize() int64 {
+	if m.MaxDBSizeMB <= 0 {
+		return 512 * 1024 * 1024
+	}
+	return int64(m.MaxDBSizeMB) * 1024 * 1024
+}
+
+// SessionBudget returns the per-session merge budget in bytes, defaulting to 256MB.
+func (m MergeConfig) SessionBudget() int64 {
+	if m.SessionBudgetMB <= 0 {
+		return 256 * 1024 * 1024
+	}
+	return int64(m.SessionBudgetMB) * 1024 * 1024
+}
+
+// MaxRowPayload returns the per-row payload size limit in bytes, defaulting to 64KB.
+func (m MergeConfig) MaxRowPayload() int {
+	if m.MaxRowPayloadBytes <= 0 {
+		return 65536
+	}
+	return m.MaxRowPayloadBytes
+}
+
+// QuarantineRetention returns the retention period in days, defaulting to 30.
+func (m MergeConfig) QuarantineRetention() int {
+	if m.QuarantineRetentionDays <= 0 {
+		return 30
+	}
+	return m.QuarantineRetentionDays
+}
+
+// MergeBatchSize returns the batch size, defaulting to 500.
+func (m MergeConfig) MergeBatchSize() int {
+	if m.BatchSize <= 0 {
+		return 500
+	}
+	return m.BatchSize
+}
+
+// DefaultDenylist returns the default merge filter denylist patterns.
+func DefaultDenylist() []string {
+	return []string{
+		"*.pem", "*.key", "*.env", "id_rsa", "*secret*", "*password*",
+		"*token*", "*.p12", "*.pfx", "*credential*", "*bearer*", "*.gpg", "*.asc",
+	}
+}
+
+// EffectiveDenylist returns the configured denylist if non-empty, otherwise the default.
+func (m MergeConfig) EffectiveDenylist() []string {
+	if len(m.Denylist) > 0 {
+		return m.Denylist
+	}
+	return DefaultDenylist()
+}
+
+// CorpusConfig controls the training corpus ingestion and annotation pipeline.
+type CorpusConfig struct {
+	RetentionDays       int    `toml:"retention_days" json:"retention_days"`               // default 90
+	MaxSizeMB           int    `toml:"max_size_mb" json:"max_size_mb"`                     // default 500
+	AnnotationInterval  string `toml:"annotation_interval" json:"annotation_interval"`     // default "15m"
+	AnnotationBatchSize int    `toml:"annotation_batch_size" json:"annotation_batch_size"` // default 200
+	AnnotationMode      string `toml:"annotation_mode" json:"annotation_mode"`             // "local" (default) or "remote"
+	VacuumInterval      string `toml:"vacuum_interval" json:"vacuum_interval"`             // default "24h"
+}
+
+// RetentionDaysOrDefault returns the retention period, defaulting to 90 days.
+func (c CorpusConfig) RetentionDaysOrDefault() int {
+	if c.RetentionDays <= 0 {
+		return 90
+	}
+	return c.RetentionDays
+}
+
+// MaxSizeBytes returns the maximum corpus size in bytes, defaulting to 500MB.
+func (c CorpusConfig) MaxSizeBytes() int64 {
+	if c.MaxSizeMB <= 0 {
+		return 500 * 1024 * 1024
+	}
+	return int64(c.MaxSizeMB) * 1024 * 1024
+}
+
+// AnnotationIntervalDuration returns the annotation interval, defaulting to 15m.
+func (c CorpusConfig) AnnotationIntervalDuration() time.Duration {
+	if c.AnnotationInterval == "" {
+		return 15 * time.Minute
+	}
+	d, err := time.ParseDuration(c.AnnotationInterval)
+	if err != nil || d <= 0 {
+		return 15 * time.Minute
+	}
+	return d
+}
+
+// AnnotationBatchSizeOrDefault returns the annotation batch size, clamped to [50, 1000].
+func (c CorpusConfig) AnnotationBatchSizeOrDefault() int {
+	if c.AnnotationBatchSize <= 0 {
+		return 200
+	}
+	if c.AnnotationBatchSize < 50 {
+		return 50
+	}
+	if c.AnnotationBatchSize > 1000 {
+		return 1000
+	}
+	return c.AnnotationBatchSize
+}
+
+// AnnotationModeOrDefault returns the annotation mode, defaulting to "local".
+func (c CorpusConfig) AnnotationModeOrDefault() string {
+	if c.AnnotationMode == "" {
+		return "local"
+	}
+	return c.AnnotationMode
+}
+
+// VacuumIntervalDuration returns the vacuum interval, defaulting to 24h.
+func (c CorpusConfig) VacuumIntervalDuration() time.Duration {
+	if c.VacuumInterval == "" {
+		return 24 * time.Hour
+	}
+	d, err := time.ParseDuration(c.VacuumInterval)
+	if err != nil || d <= 0 {
+		return 24 * time.Hour
+	}
+	return d
+}
+
 // FleetConfig controls the Fleet Reporter subsystem.
 type FleetConfig struct {
 	Enabled  bool   `toml:"enabled" json:"enabled"`
@@ -615,6 +803,55 @@ func merge(dst, src *Config) {
 	}
 	if src.CloudSync.PollInterval != "" {
 		dst.CloudSync.PollInterval = src.CloudSync.PollInterval
+	}
+
+	// VM
+	if src.VM.Mode != "" {
+		dst.VM.Mode = src.VM.Mode
+	}
+	if src.VM.Enabled {
+		dst.VM.Enabled = true
+	}
+	if src.VM.DBPath != "" {
+		dst.VM.DBPath = src.VM.DBPath
+	}
+	if src.VM.VsockControlPort != 0 {
+		dst.VM.VsockControlPort = src.VM.VsockControlPort
+	}
+	if src.VM.VsockInferencePort != 0 {
+		dst.VM.VsockInferencePort = src.VM.VsockInferencePort
+	}
+	if len(src.VM.Denylist) > 0 {
+		dst.VM.Denylist = src.VM.Denylist
+	}
+	if src.VM.RateLimitPerSource != 0 {
+		dst.VM.RateLimitPerSource = src.VM.RateLimitPerSource
+	}
+	if src.VM.InferenceQueueDepth != 0 {
+		dst.VM.InferenceQueueDepth = src.VM.InferenceQueueDepth
+	}
+
+	// Merge
+	if len(src.Merge.Denylist) > 0 {
+		dst.Merge.Denylist = src.Merge.Denylist
+	}
+	if src.Merge.MaxDBSizeMB != 0 {
+		dst.Merge.MaxDBSizeMB = src.Merge.MaxDBSizeMB
+	}
+	if src.Merge.SessionBudgetMB != 0 {
+		dst.Merge.SessionBudgetMB = src.Merge.SessionBudgetMB
+	}
+	if src.Merge.MaxRowPayloadBytes != 0 {
+		dst.Merge.MaxRowPayloadBytes = src.Merge.MaxRowPayloadBytes
+	}
+	if src.Merge.QuarantineRetentionDays != 0 {
+		dst.Merge.QuarantineRetentionDays = src.Merge.QuarantineRetentionDays
+	}
+	if src.Merge.FilterVersion != "" {
+		dst.Merge.FilterVersion = src.Merge.FilterVersion
+	}
+	if src.Merge.BatchSize != 0 {
+		dst.Merge.BatchSize = src.Merge.BatchSize
 	}
 }
 

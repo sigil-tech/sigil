@@ -120,6 +120,14 @@ func run() error {
 		return cmdStart(*socketPath)
 	case "auth":
 		return cmdAuth(*socketPath, args)
+	case "vm":
+		return cmdVM(*socketPath, args)
+	case "merge":
+		return cmdMerge(*socketPath, args)
+	case "corpus":
+		return cmdCorpus(*socketPath, args)
+	case "audit":
+		return cmdAudit(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
@@ -1171,15 +1179,20 @@ Commands:
   fleet status                  Show fleet reporting opt-in status
   fleet preview                 Show what fleet data will be sent
   fleet opt-out                 Disable fleet reporting
-<<<<<<< HEAD
   auth login                    Authenticate with a Sigil cloud API key
   auth status                   Show current tier and API key status
   auth logout                   Remove API key from config
-=======
   sync status                   Show sync agent status and cursors
   sync pause                    Temporarily pause cloud sync
   sync resume                   Resume cloud sync after pause
->>>>>>> upstream/feat/009-sync-agent
+  vm start --image PATH         Start a VM from a disk image
+  vm stop [--session ID]        Stop a running VM session
+  vm status [--session ID]      Show VM session status
+  vm list [--limit N]           List recent VM sessions
+  merge log [--session ID]      Show merge log for a session
+  merge status --session ID     Show merge status for a session
+  merge purge --session ID      Purge merge state for a session
+  merge retry --session ID      Retry a failed merge for a session
   credential add <name>         Generate a new remote-access credential
   credential list               List all credentials
   credential revoke <name>      Revoke a credential immediately
@@ -1388,8 +1401,17 @@ func cmdML(socketPath string, args []string) error {
 			return fmt.Errorf("usage: sigilctl ml predict <endpoint> [key=value ...]")
 		}
 		return cmdMLPredict(socketPath, args[1], args[2:])
+	case "finetune":
+		return cmdMLFinetune(socketPath)
+	case "history":
+		return cmdMLHistory(socketPath)
+	case "rollback":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: sigilctl ml rollback <adapter-id>")
+		}
+		return cmdMLRollback(socketPath, args[1])
 	default:
-		return fmt.Errorf("unknown ml subcommand %q — use: status, train, predict", args[0])
+		return fmt.Errorf("unknown ml subcommand %q — use: status, train, predict, finetune, history, rollback", args[0])
 	}
 }
 
@@ -1465,6 +1487,97 @@ func cmdMLPredict(socketPath string, endpoint string, kvPairs []string) error {
 	for k, v := range pred.Result {
 		fmt.Printf("  %s: %v\n", k, v)
 	}
+	return nil
+}
+
+func cmdMLFinetune(socketPath string) error {
+	resp, err := call(socketPath, "ml-finetune", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result struct {
+		RunID       string  `json:"run_id"`
+		Status      string  `json:"status"`
+		RowsTrained int     `json:"rows_trained"`
+		AdapterPath string  `json:"adapter_path"`
+		LossFinal   float64 `json:"loss_final"`
+		Duration    string  `json:"duration"`
+		Error       string  `json:"error"`
+	}
+	_ = json.Unmarshal(resp.Payload, &result)
+	fmt.Printf("Fine-tune run: %s\n", result.RunID)
+	fmt.Printf("  Status:   %s\n", result.Status)
+	if result.RowsTrained > 0 {
+		fmt.Printf("  Rows:     %d\n", result.RowsTrained)
+	}
+	if result.AdapterPath != "" {
+		fmt.Printf("  Adapter:  %s\n", result.AdapterPath)
+	}
+	if result.LossFinal > 0 {
+		fmt.Printf("  Loss:     %.4f\n", result.LossFinal)
+	}
+	if result.Duration != "" {
+		fmt.Printf("  Duration: %s\n", result.Duration)
+	}
+	if result.Error != "" {
+		fmt.Printf("  Error:    %s\n", result.Error)
+	}
+	return nil
+}
+
+func cmdMLHistory(socketPath string) error {
+	resp, err := call(socketPath, "ml-history", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var entries []struct {
+		RunID       string  `json:"run_id"`
+		StartedAt   int64   `json:"started_at"`
+		Status      string  `json:"status"`
+		Mode        string  `json:"mode"`
+		RowsTrained int     `json:"rows_trained"`
+		LossFinal   float64 `json:"loss_final"`
+	}
+	_ = json.Unmarshal(resp.Payload, &entries)
+	if len(entries) == 0 {
+		fmt.Println("No fine-tune runs found.")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "RUN ID\tSTATUS\tMODE\tROWS\tLOSS\tDATE")
+	for _, e := range entries {
+		date := time.UnixMilli(e.StartedAt).Format("2006-01-02 15:04")
+		loss := "-"
+		if e.LossFinal > 0 {
+			loss = fmt.Sprintf("%.4f", e.LossFinal)
+		}
+		rid := e.RunID
+		if len(rid) > 8 {
+			rid = rid[:8]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", rid, e.Status, e.Mode, e.RowsTrained, loss, date)
+	}
+	w.Flush()
+	return nil
+}
+
+func cmdMLRollback(socketPath string, adapterID string) error {
+	resp, err := call(socketPath, "ml-rollback", map[string]any{
+		"adapter_id": adapterID,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	fmt.Printf("Rolled back to adapter %s\n", adapterID)
 	return nil
 }
 
@@ -1705,5 +1818,699 @@ func startDirect() error {
 	// Detach — don't wait for the child.
 	_ = cmd.Process.Release()
 	fmt.Printf("sigild started (pid %d)\n", cmd.Process.Pid)
+	return nil
+}
+
+// --- VM commands ------------------------------------------------------------
+
+// cmdVM dispatches vm subcommands: start, stop, status, list.
+func cmdVM(socketPath string, args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage: sigilctl vm <start|stop|status|list> [flags]")
+		return nil
+	}
+	switch args[0] {
+	case "start":
+		return cmdVMStart(socketPath, args[1:])
+	case "stop":
+		return cmdVMStop(socketPath, args[1:])
+	case "status":
+		return cmdVMStatus(socketPath, args[1:])
+	case "list":
+		return cmdVMList(socketPath, args[1:])
+	default:
+		return fmt.Errorf("unknown vm command %q — use start, stop, status, or list", args[0])
+	}
+}
+
+func cmdVMStart(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("vm start", flag.ContinueOnError)
+	image := fs.String("image", "", "path to the VM disk image (required)")
+	overlay := fs.String("overlay", "", "path to the overlay disk image")
+	vmDB := fs.String("vm-db", "", "path to the VM SQLite database")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *image == "" {
+		return fmt.Errorf("usage: sigilctl vm start --image PATH [--overlay PATH] [--vm-db PATH]")
+	}
+
+	payload := map[string]any{"image": *image}
+	if *overlay != "" {
+		payload["overlay"] = *overlay
+	}
+	if *vmDB != "" {
+		payload["vm_db"] = *vmDB
+	}
+
+	resp, err := call(socketPath, "VMStart", payload)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+		PID       int    `json:"pid"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Session:  %s\n", result.SessionID)
+	fmt.Printf("State:    %s\n", result.State)
+	if result.PID != 0 {
+		fmt.Printf("PID:      %d\n", result.PID)
+	}
+	return nil
+}
+
+func cmdVMStop(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("vm stop", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID to stop (defaults to active session)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	payload := map[string]any{}
+	if *sessionID != "" {
+		payload["session_id"] = *sessionID
+	}
+
+	resp, err := call(socketPath, "VMStop", payload)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Session %s stopped (state: %s)\n", result.SessionID, result.State)
+	return nil
+}
+
+func cmdVMStatus(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("vm status", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID (defaults to active session)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	payload := map[string]any{}
+	if *sessionID != "" {
+		payload["session_id"] = *sessionID
+	}
+
+	resp, err := call(socketPath, "VMStatus", payload)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+		Image     string `json:"image"`
+		StartedAt string `json:"started_at"`
+		PID       int    `json:"pid"`
+		UptimeSec int64  `json:"uptime_sec"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Session:  %s\n", result.SessionID)
+	fmt.Printf("State:    %s\n", result.State)
+	if result.Image != "" {
+		fmt.Printf("Image:    %s\n", result.Image)
+	}
+	if result.StartedAt != "" {
+		if t, err := time.Parse(time.RFC3339, result.StartedAt); err == nil {
+			fmt.Printf("Started:  %s\n", t.Local().Format("2006-01-02 15:04:05"))
+		} else {
+			fmt.Printf("Started:  %s\n", result.StartedAt)
+		}
+	}
+	if result.PID != 0 {
+		fmt.Printf("PID:      %d\n", result.PID)
+	}
+	if result.UptimeSec > 0 {
+		fmt.Printf("Uptime:   %s\n", formatDuration(result.UptimeSec))
+	}
+	return nil
+}
+
+func cmdVMList(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("vm list", flag.ContinueOnError)
+	limit := fs.Int("limit", 20, "maximum number of sessions to show")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resp, err := call(socketPath, "VMList", map[string]any{"limit": *limit})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var sessions []struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+		Image     string `json:"image"`
+		StartedAt string `json:"started_at"`
+		StoppedAt string `json:"stopped_at"`
+	}
+	if err := json.Unmarshal(resp.Payload, &sessions); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("No VM sessions found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION\tSTATE\tSTARTED\tSTOPPED\tIMAGE")
+	for _, s := range sessions {
+		started := formatTimestamp(s.StartedAt)
+		stopped := formatTimestamp(s.StoppedAt)
+		if stopped == "" {
+			stopped = "-"
+		}
+		image := filepath.Base(s.Image)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.SessionID, s.State, started, stopped, image)
+	}
+	return w.Flush()
+}
+
+// --- Merge commands ---------------------------------------------------------
+
+// cmdMerge dispatches merge subcommands: log, status, purge, retry.
+func cmdMerge(socketPath string, args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage: sigilctl merge <log|status|purge|retry> [flags]")
+		return nil
+	}
+	switch args[0] {
+	case "log":
+		return cmdMergeLog(socketPath, args[1:])
+	case "status":
+		return cmdMergeStatus(socketPath, args[1:])
+	case "purge":
+		return cmdMergePurge(socketPath, args[1:])
+	case "retry":
+		return cmdMergeRetry(socketPath, args[1:])
+	default:
+		return fmt.Errorf("unknown merge command %q — use log, status, purge, or retry", args[0])
+	}
+}
+
+func cmdMergeLog(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("merge log", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "filter by session ID")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	payload := map[string]any{}
+	if *sessionID != "" {
+		payload["session_id"] = *sessionID
+	}
+
+	resp, err := call(socketPath, "merge-log", payload)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var entries []struct {
+		ID        int64  `json:"id"`
+		SessionID string `json:"session_id"`
+		Op        string `json:"op"`
+		State     string `json:"state"`
+		Path      string `json:"path"`
+		Error     string `json:"error"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(resp.Payload, &entries); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No merge log entries.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSESSION\tOP\tSTATE\tCREATED\tPATH")
+	for _, e := range entries {
+		ts := formatTimestamp(e.CreatedAt)
+		path := e.Path
+		if path == "" {
+			path = "-"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n", e.ID, e.SessionID, e.Op, e.State, ts, path)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	// Print errors separately for readability.
+	for _, e := range entries {
+		if e.Error != "" {
+			fmt.Printf("\n[%d] error: %s\n", e.ID, e.Error)
+		}
+	}
+	return nil
+}
+
+func cmdMergeStatus(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("merge status", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *sessionID == "" {
+		return fmt.Errorf("usage: sigilctl merge status --session ID")
+	}
+
+	resp, err := call(socketPath, "merge-log", map[string]any{"session_id": *sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var entries []struct {
+		ID        int64  `json:"id"`
+		Op        string `json:"op"`
+		State     string `json:"state"`
+		Path      string `json:"path"`
+		Error     string `json:"error"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.Unmarshal(resp.Payload, &entries); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(entries) == 0 {
+		fmt.Printf("No merge activity for session %s.\n", *sessionID)
+		return nil
+	}
+
+	// Summarise by state.
+	counts := make(map[string]int)
+	for _, e := range entries {
+		counts[e.State]++
+	}
+
+	fmt.Printf("Session: %s\n", *sessionID)
+	fmt.Printf("Entries: %d\n", len(entries))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  STATE\tCOUNT")
+	for state, n := range counts {
+		fmt.Fprintf(w, "  %s\t%d\n", state, n)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	// Show the most recent entry.
+	last := entries[len(entries)-1]
+	fmt.Printf("\nLast op: %s → %s at %s\n", last.Op, last.State, formatTimestamp(last.CreatedAt))
+	if last.Error != "" {
+		fmt.Printf("Error:   %s\n", last.Error)
+	}
+	return nil
+}
+
+func cmdMergePurge(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("merge purge", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *sessionID == "" {
+		return fmt.Errorf("usage: sigilctl merge purge --session ID")
+	}
+
+	resp, err := call(socketPath, "merge-purge", map[string]any{"session_id": *sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	fmt.Printf("Merge state for session %s purged.\n", *sessionID)
+	return nil
+}
+
+func cmdMergeRetry(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("merge retry", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *sessionID == "" {
+		return fmt.Errorf("usage: sigilctl merge retry --session ID")
+	}
+
+	resp, err := call(socketPath, "VMMerge", map[string]any{"session_id": *sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		State     string `json:"state"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	fmt.Printf("Merge retry for session %s: %s\n", result.SessionID, result.State)
+	return nil
+}
+
+// --- Formatting helpers -----------------------------------------------------
+
+// formatTimestamp parses an RFC3339 timestamp and returns a short local time
+// string. Returns the original value unchanged if parsing fails.
+func formatTimestamp(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+// formatDuration converts a duration in seconds to a human-readable string
+// such as "2h 15m 30s".
+func formatDuration(sec int64) string {
+	h := sec / 3600
+	m := (sec % 3600) / 60
+	s := sec % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
+}
+
+// --- Corpus commands ---------------------------------------------------------
+
+func cmdCorpus(socketPath string, args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage: sigilctl corpus <stats|purge|export>")
+		return nil
+	}
+
+	switch args[0] {
+	case "stats":
+		return cmdCorpusStats(socketPath)
+	case "purge":
+		return cmdCorpusPurge(socketPath, args[1:])
+	case "export":
+		return cmdCorpusExport(socketPath, args[1:])
+	default:
+		return fmt.Errorf("unknown corpus command %q — use stats, purge, or export", args[0])
+	}
+}
+
+func cmdCorpusStats(socketPath string) error {
+	resp, err := call(socketPath, "corpus-stats", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var stats struct {
+		TotalRows        int            `json:"total_rows"`
+		RowsByOrigin     map[string]int `json:"rows_by_origin"`
+		LabelDist        map[string]int `json:"label_distribution"`
+		AnnotatedCount   int            `json:"annotated_count"`
+		UnannotatedCount int            `json:"unannotated_count"`
+		OldestTS         int64          `json:"oldest_ts"`
+		NewestTS         int64          `json:"newest_ts"`
+	}
+	if err := json.Unmarshal(resp.Payload, &stats); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+
+	fmt.Printf("Training Corpus Statistics\n")
+	fmt.Printf("  Total rows:    %d\n", stats.TotalRows)
+	fmt.Printf("  Annotated:     %d\n", stats.AnnotatedCount)
+	fmt.Printf("  Unannotated:   %d\n", stats.UnannotatedCount)
+
+	if stats.TotalRows > 0 {
+		fmt.Printf("  Date range:    %s — %s\n",
+			time.UnixMilli(stats.OldestTS).Format("2006-01-02"),
+			time.UnixMilli(stats.NewestTS).Format("2006-01-02"))
+	}
+
+	fmt.Printf("\n  By origin:\n")
+	for origin, count := range stats.RowsByOrigin {
+		fmt.Printf("    %-12s %d\n", origin, count)
+	}
+
+	fmt.Printf("\n  Label distribution:\n")
+	for label, count := range stats.LabelDist {
+		fmt.Printf("    %-16s %d\n", label, count)
+	}
+
+	return nil
+}
+
+func cmdCorpusPurge(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("corpus purge", flag.ContinueOnError)
+	before := fs.String("before", "", "delete rows before this date (YYYY-MM-DD)")
+	yes := fs.Bool("yes", false, "skip confirmation prompt")
+	dryRun := fs.Bool("dry-run", false, "show count without deleting")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *before == "" {
+		return fmt.Errorf("--before is required (format: YYYY-MM-DD)")
+	}
+
+	t, err := time.Parse("2006-01-02", *before)
+	if err != nil {
+		return fmt.Errorf("invalid date %q: %w", *before, err)
+	}
+	beforeTS := t.UnixMilli()
+
+	if *dryRun {
+		fmt.Printf("Would delete corpus rows before %s (dry run)\n", *before)
+		return nil
+	}
+
+	if !*yes {
+		fmt.Printf("This will delete all corpus rows before %s. Continue? [y/N] ", *before)
+		var answer string
+		fmt.Scanln(&answer)
+		if answer != "y" && answer != "Y" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	resp, err := call(socketPath, "corpus-purge", map[string]any{
+		"before_ts": beforeTS,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		RowsDeleted int `json:"rows_deleted"`
+	}
+	_ = json.Unmarshal(resp.Payload, &result)
+	fmt.Printf("Deleted %d corpus rows.\n", result.RowsDeleted)
+	return nil
+}
+
+func cmdCorpusExport(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("corpus export", flag.ContinueOnError)
+	output := fs.String("output", "corpus.jsonl", "output file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	resp, err := call(socketPath, "corpus-export", map[string]any{
+		"output_path": *output,
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		RowsExported int    `json:"rows_exported"`
+		OutputPath   string `json:"output_path"`
+	}
+	_ = json.Unmarshal(resp.Payload, &result)
+	fmt.Printf("Exported %d rows to %s\n", result.RowsExported, result.OutputPath)
+	return nil
+}
+
+// --- Audit viewer commands ---------------------------------------------------
+
+func cmdAudit(socketPath string, args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage: sigilctl audit <corpus|merge|filtered>")
+		return nil
+	}
+
+	switch args[0] {
+	case "corpus":
+		return cmdAuditCorpus(socketPath)
+	case "merge":
+		return cmdAuditMerge(socketPath)
+	case "filtered":
+		return cmdAuditFiltered(socketPath)
+	default:
+		return fmt.Errorf("unknown audit command %q — use corpus, merge, or filtered", args[0])
+	}
+}
+
+func cmdAuditCorpus(socketPath string) error {
+	resp, err := call(socketPath, "audit-corpus", map[string]any{"limit": 20})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var rows []struct {
+		ID          int64    `json:"id"`
+		TS          int64    `json:"ts"`
+		Origin      string   `json:"origin"`
+		EventType   string   `json:"event_type"`
+		Source      string   `json:"source"`
+		PayloadHash string   `json:"payload_hash"`
+		Label       *string  `json:"label"`
+		Phase       *string  `json:"phase"`
+		Confidence  *float64 `json:"confidence"`
+	}
+	_ = json.Unmarshal(resp.Payload, &rows)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTS\tORIGIN\tEVENT\tLABEL\tPHASE\tCONFIDENCE")
+	for _, r := range rows {
+		label, phase, conf := "-", "-", "-"
+		if r.Label != nil {
+			label = *r.Label
+		}
+		if r.Phase != nil {
+			phase = *r.Phase
+		}
+		if r.Confidence != nil {
+			conf = fmt.Sprintf("%.2f", *r.Confidence)
+		}
+		ts := time.UnixMilli(r.TS).Format("01-02 15:04")
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, ts, r.Origin, r.EventType, label, phase, conf)
+	}
+	w.Flush()
+	return nil
+}
+
+func cmdAuditMerge(socketPath string) error {
+	resp, err := call(socketPath, "audit-merge-log", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var rows []struct {
+		SessionID    string `json:"session_id"`
+		StartedAt    int64  `json:"started_at"`
+		Status       string `json:"status"`
+		RowsMerged   int    `json:"rows_merged"`
+		RowsFiltered int    `json:"rows_filtered"`
+	}
+	_ = json.Unmarshal(resp.Payload, &rows)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION\tSTARTED\tSTATUS\tMERGED\tFILTERED")
+	for _, r := range rows {
+		sid := r.SessionID
+		if len(sid) > 12 {
+			sid = sid[:12]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
+			sid, time.UnixMilli(r.StartedAt).Format("01-02 15:04"), r.Status, r.RowsMerged, r.RowsFiltered)
+	}
+	w.Flush()
+	return nil
+}
+
+func cmdAuditFiltered(socketPath string) error {
+	resp, err := call(socketPath, "audit-filtered-log", nil)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var rows []struct {
+		SessionID      string `json:"session_id"`
+		TS             int64  `json:"ts"`
+		EventType      string `json:"event_type"`
+		FilterRule     string `json:"filter_rule"`
+		ExcludedReason string `json:"excluded_reason"`
+	}
+	_ = json.Unmarshal(resp.Payload, &rows)
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION\tTS\tEVENT\tRULE\tREASON")
+	for _, r := range rows {
+		sid := r.SessionID
+		if len(sid) > 12 {
+			sid = sid[:12]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			sid, time.UnixMilli(r.TS).Format("01-02 15:04"), r.EventType, r.FilterRule, r.ExcludedReason)
+	}
+	w.Flush()
 	return nil
 }

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/socket"
+	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails-bound backend. It communicates with sigild over the Unix
@@ -586,4 +586,270 @@ func (a *App) NotifyWindowBlur() {
 	a.mu.Lock()
 	a.windowOpen = false
 	a.mu.Unlock()
+}
+
+// --- Spec 022: Control plane methods -----------------------------------------
+
+// GetCorpusStats returns aggregated training corpus statistics.
+func (a *App) GetCorpusStats() (map[string]any, error) {
+	resp, err := a.call("corpus-stats", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetAuditCorpus returns metadata-only corpus rows for the audit viewer.
+func (a *App) GetAuditCorpus(limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	resp, err := a.call("audit-corpus", map[string]any{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetAuditMergeLog returns the merge log for the audit viewer.
+func (a *App) GetAuditMergeLog() ([]map[string]any, error) {
+	resp, err := a.call("audit-merge-log", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetAuditFilteredLog returns the filtered log for the audit viewer.
+func (a *App) GetAuditFilteredLog() ([]map[string]any, error) {
+	resp, err := a.call("audit-filtered-log", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetMLStatus returns the fine-tuner status.
+func (a *App) GetMLStatus() (map[string]any, error) {
+	resp, err := a.call("ml-status", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetMLHistory returns recent fine-tune runs.
+func (a *App) GetMLHistory() ([]map[string]any, error) {
+	resp, err := a.call("ml-history", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// TriggerMLFinetune triggers an immediate fine-tune run.
+func (a *App) TriggerMLFinetune() (map[string]any, error) {
+	resp, err := a.call("ml-finetune", nil)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// PurgeCorpusSession deletes corpus rows for a session.
+func (a *App) PurgeCorpusSession(beforeTS int64) (map[string]any, error) {
+	resp, err := a.call("corpus-purge", map[string]any{
+		"before_ts": beforeTS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VersionHandshake performs protocol version negotiation with the daemon.
+func (a *App) VersionHandshake() (map[string]any, error) {
+	resp, err := a.call("version-handshake", map[string]any{
+		"app_version":  "0.1.0",
+		"min_protocol": 2,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// UpdateInferenceMode updates the inference mode with explicit acknowledgement
+// for remote modes (per spec 022 FR-007 security gate).
+func (a *App) UpdateInferenceMode(mode string, acknowledgeRemote bool) error {
+	payload := map[string]any{
+		"section":                         "inference",
+		"values":                          map[string]any{"mode": mode},
+		"acknowledge_remote_transmission": acknowledgeRemote,
+	}
+	resp, err := a.call("config-update", payload)
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
+// --- Spec 022 FR-006: VM Launcher ---------------------------------------------
+
+// VMStartRequest mirrors the daemon payload for VMStart.
+type VMStartRequest struct {
+	DiskImagePath string `json:"disk_image_path"`
+	OverlayPath   string `json:"overlay_path,omitempty"`
+	VMDBPath      string `json:"vm_db_path,omitempty"`
+	VsockCID      int    `json:"vsock_cid,omitempty"`
+	FilterVersion string `json:"filter_version,omitempty"`
+}
+
+// VMStart launches a VM session.
+func (a *App) VMStart(req VMStartRequest) (map[string]any, error) {
+	resp, err := a.call("VMStart", req)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMStop stops an active VM session.
+func (a *App) VMStop(sessionID string) error {
+	resp, err := a.call("VMStop", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	return nil
+}
+
+// VMStatus returns the current VM session status. An empty session_id returns
+// the active session (if any).
+func (a *App) VMStatus(sessionID string) (map[string]any, error) {
+	resp, err := a.call("VMStatus", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	if len(resp.Payload) == 0 || string(resp.Payload) == "null" {
+		return nil, nil
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMList returns recent VM sessions (most recent first).
+func (a *App) VMList(limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	resp, err := a.call("VMList", map[string]any{"limit": limit})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// VMMerge triggers the VM-to-host merge for a stopped session.
+func (a *App) VMMerge(sessionID string) (map[string]any, error) {
+	resp, err := a.call("VMMerge", map[string]any{"session_id": sessionID})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("daemon error: %s", resp.Error)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }

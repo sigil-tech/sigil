@@ -37,6 +37,30 @@ type pushEvent struct {
 // HandlerFunc processes a single request and returns a response.
 type HandlerFunc func(ctx context.Context, req Request) Response
 
+// allowedTopics is the explicit allowlist of topics that clients may subscribe to.
+// Subscription requests for any topic not in this set are rejected. This ensures
+// only intended event streams are exposed to external subscribers.
+var allowedTopics = map[string]bool{
+	"suggestions":         true, // legacy suggestion push topic
+	"actuations":          true, // legacy actuator push topic
+	"vm-status":           true, // VM lifecycle state changes
+	"observer-event-rate": true, // observer event rate updates
+	"analyzer-cycle":      true, // analyzer cycle completion
+}
+
+// isAllowedTopic reports whether topic is in the allowlist.
+func isAllowedTopic(topic string) bool {
+	return allowedTopics[topic]
+}
+
+// RegisterTopic allows the daemon to register additional topics at startup.
+// Must be called before any subscribers connect. This enables plugins or
+// optional subsystems to register their own topics without modifying the
+// allowlist in code.
+func RegisterTopic(topic string) {
+	allowedTopics[topic] = true
+}
+
 // Server listens on a Unix socket and dispatches requests to registered
 // handlers.  Multiple concurrent clients are supported.
 type Server struct {
@@ -114,6 +138,14 @@ func (s *Server) Start(ctx context.Context) error {
 	ln, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("socket: listen %s: %w", s.socketPath, err)
+	}
+
+	// Enforce 0600 permissions on the socket file so only the owning user
+	// can connect. Without this, the umask-dependent default permissions
+	// may allow other local users to connect.
+	if err := os.Chmod(s.socketPath, 0o600); err != nil {
+		ln.Close()
+		return fmt.Errorf("socket: chmod %s: %w", s.socketPath, err)
 	}
 
 	s.mu.Lock()
@@ -217,6 +249,13 @@ func (s *Server) handleSubscribe(ctx context.Context, conn net.Conn, enc *json.E
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil || p.Topic == "" {
 		_ = enc.Encode(Response{Error: "subscribe: payload must be {\"topic\":\"<name>\"}"})
+		return
+	}
+
+	// Enforce topic allowlist: subscribers may only receive events on
+	// topics explicitly published by the daemon. Unknown topics are rejected.
+	if !isAllowedTopic(p.Topic) {
+		_ = enc.Encode(Response{Error: fmt.Sprintf("subscribe: unknown topic %q", p.Topic)})
 		return
 	}
 
