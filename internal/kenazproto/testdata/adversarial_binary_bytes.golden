@@ -1,0 +1,11 @@
+{
+  "id": 2004,
+  "origin": "host",
+  "source_id": "process",
+  "timestamp": 1768478400000,
+  "kind": "process",
+  "subject": "proc?with?binary?bytes pid 99",
+  "subject_dim": "pid 99",
+  "size_chip": "",
+  "content_class": "metadata-only"
+}

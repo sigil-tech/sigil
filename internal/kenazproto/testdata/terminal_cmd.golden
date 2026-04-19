@@ -1,0 +1,11 @@
+{
+  "id": 1006,
+  "origin": "host",
+  "source_id": "process",
+  "timestamp": 1768478400000,
+  "kind": "terminal",
+  "subject": "go",
+  "subject_dim": "",
+  "size_chip": "exit 0",
+  "content_class": "metadata-only"
+}

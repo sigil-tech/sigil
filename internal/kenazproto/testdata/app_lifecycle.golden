@@ -1,0 +1,11 @@
+{
+  "id": 1011,
+  "origin": "host",
+  "source_id": "app-context",
+  "timestamp": 1768478400000,
+  "kind": "app_lifecycle",
+  "subject": "VSCode.app launched",
+  "subject_dim": "",
+  "size_chip": "",
+  "content_class": "metadata-only"
+}

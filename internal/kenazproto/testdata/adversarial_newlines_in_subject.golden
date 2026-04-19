@@ -1,0 +1,11 @@
+{
+  "id": 2002,
+  "origin": "host",
+  "source_id": "process",
+  "timestamp": 1768478400000,
+  "kind": "terminal",
+  "subject": "bash --norc  -i",
+  "subject_dim": "",
+  "size_chip": "exit 1",
+  "content_class": "metadata-only"
+}

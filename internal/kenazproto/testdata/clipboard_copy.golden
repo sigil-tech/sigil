@@ -1,0 +1,11 @@
+{
+  "id": 1007,
+  "origin": "host",
+  "source_id": "clipboard",
+  "timestamp": 1768478400000,
+  "kind": "clipboard",
+  "subject": "sha256:4f3a91e7b2d8c5f0a1e9d3b6c8f2a4e7b0d5c9f3a1e8b2d6c4f0a9e3b7d1c5",
+  "subject_dim": "",
+  "size_chip": "248 B",
+  "content_class": "hash"
+}

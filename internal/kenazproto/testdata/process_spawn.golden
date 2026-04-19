@@ -1,0 +1,11 @@
+{
+  "id": 1005,
+  "origin": "host",
+  "source_id": "process",
+  "timestamp": 1768478400000,
+  "kind": "process",
+  "subject": "node pid 81341",
+  "subject_dim": "pid 81341",
+  "size_chip": "",
+  "content_class": "metadata-only"
+}

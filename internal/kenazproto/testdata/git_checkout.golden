@@ -1,0 +1,11 @@
+{
+  "id": 1004,
+  "origin": "host",
+  "source_id": "filesystem",
+  "timestamp": 1768478400000,
+  "kind": "git",
+  "subject": "~/workspace/sigil checkout",
+  "subject_dim": "027-kenaz-sigild-observer-integration",
+  "size_chip": "",
+  "content_class": "metadata-only"
+}

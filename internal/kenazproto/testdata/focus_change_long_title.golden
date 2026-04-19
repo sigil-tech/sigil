@@ -1,0 +1,11 @@
+{
+  "id": 2001,
+  "origin": "host",
+  "source_id": "app-context",
+  "timestamp": 1768478400000,
+  "kind": "hyprland",
+  "subject": "Very Long Application Title That Exceeds The Sixty-Four Byte Har",
+  "subject_dim": "ws 1",
+  "size_chip": "",
+  "content_class": "truncated"
+}

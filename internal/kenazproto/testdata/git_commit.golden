@@ -1,0 +1,11 @@
+{
+  "id": 1003,
+  "origin": "host",
+  "source_id": "filesystem",
+  "timestamp": 1768478400000,
+  "kind": "git",
+  "subject": "~/workspace/sigil commit",
+  "subject_dim": "main",
+  "size_chip": "2c460d1",
+  "content_class": "metadata-only"
+}
