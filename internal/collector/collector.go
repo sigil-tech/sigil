@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/sigil-tech/sigil/internal/event"
+	"github.com/sigil-tech/sigil/internal/kenazproto"
 )
 
 // EventInserter is the subset of store operations the collector needs.
@@ -33,6 +34,7 @@ type Collector struct {
 	store   EventInserter
 	sources []Source
 	log     *slog.Logger
+	rateObs RateObserver
 
 	// Broadcast is kept for backward compatibility.  New consumers should use
 	// Subscribe() instead, which gives each consumer its own buffered channel.
@@ -45,13 +47,32 @@ type Collector struct {
 	wg     sync.WaitGroup
 }
 
+// Option is a functional option for New.
+type Option func(*Collector)
+
+// WithRateObserver injects a RateObserver into the Collector.  The observer is
+// called on the drain hot-path; it MUST be non-blocking.  When nil is passed
+// the default no-op observer is kept.
+func WithRateObserver(obs RateObserver) Option {
+	return func(c *Collector) {
+		if obs != nil {
+			c.rateObs = obs
+		}
+	}
+}
+
 // New creates a Collector.  sources may be extended before calling Start.
-func New(s EventInserter, log *slog.Logger) *Collector {
-	return &Collector{
+func New(s EventInserter, log *slog.Logger, opts ...Option) *Collector {
+	c := &Collector{
 		store:     s,
 		log:       log,
+		rateObs:   noopRateObserver{},
 		Broadcast: make(chan event.Event, 256),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Add registers an additional source.  Must be called before Start.
@@ -117,6 +138,11 @@ func (c *Collector) drain(ctx context.Context, name string, ch <-chan event.Even
 			if err := c.store.InsertEvent(ctx, e); err != nil {
 				c.log.Error("store event", "source", name, "err", err)
 				continue
+			}
+			// Notify the rate observer for mapped event kinds.  Unmapped kinds
+			// (e.g. KindIdle, KindPointer) are silently skipped per FR-010d.
+			if sourceID, ok := kenazproto.SourceIDForKind(e.Kind); ok {
+				c.rateObs.Observe(sourceID)
 			}
 			// Non-blocking broadcast to legacy channel.
 			select {

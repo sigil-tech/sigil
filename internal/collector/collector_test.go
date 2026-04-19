@@ -340,6 +340,157 @@ func TestBroadcast_nonBlocking(t *testing.T) {
 	}
 }
 
+// spyRateObserver records every (sourceID, count) pair passed to Observe.
+type spyRateObserver struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newSpyRateObserver() *spyRateObserver {
+	return &spyRateObserver{counts: make(map[string]int)}
+}
+
+func (s *spyRateObserver) Observe(sourceID string) {
+	s.mu.Lock()
+	s.counts[sourceID]++
+	s.mu.Unlock()
+}
+
+func (s *spyRateObserver) total() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]int, len(s.counts))
+	for k, v := range s.counts {
+		out[k] = v
+	}
+	return out
+}
+
+// countingInserter records all events and closes storedN after exactly n
+// successful InsertEvent calls.
+type countingInserter struct {
+	mockInserter
+	target  int
+	once    sync.Once
+	storedN chan struct{}
+}
+
+func newCountingInserter(n int) *countingInserter {
+	return &countingInserter{target: n, storedN: make(chan struct{})}
+}
+
+func (c *countingInserter) InsertEvent(ctx context.Context, e event.Event) error {
+	err := c.mockInserter.InsertEvent(ctx, e)
+	if err == nil {
+		c.mu.Lock()
+		n := len(c.events)
+		c.mu.Unlock()
+		if n >= c.target {
+			c.once.Do(func() { close(c.storedN) })
+		}
+	}
+	return err
+}
+
+// TestCollector_RateObserverInjection verifies that:
+//   - Observe is called once per successfully stored event for mapped kinds.
+//   - Observe is NOT called for unmapped kinds (KindIdle, KindPointer, KindAI).
+func TestCollector_RateObserverInjection(t *testing.T) {
+	// Mapped kinds: KindFile → "filesystem", KindProcess → "process"
+	mapped := []event.Event{
+		makeEvent(event.KindFile, "src"),
+		makeEvent(event.KindFile, "src"),
+		makeEvent(event.KindProcess, "src"),
+	}
+	// Unmapped kinds: KindIdle, KindPointer, KindAI — must not trigger Observe.
+	unmapped := []event.Event{
+		makeEvent(event.KindIdle, "src"),
+		makeEvent(event.KindPointer, "src"),
+		makeEvent(event.KindAI, "src"),
+	}
+	all := append(mapped, unmapped...)
+
+	// Wait for all 6 events to be stored before stopping, so drain processes
+	// everything before ctx cancellation races with the channel drain.
+	ins := newCountingInserter(len(all))
+	spy := newSpyRateObserver()
+	c := New(ins, discardLogger(), WithRateObserver(spy))
+
+	ch := make(chan event.Event, len(all))
+	c.Add(&mockSource{name: "src", ch: ch})
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	for _, e := range all {
+		ch <- e
+	}
+
+	// Wait for all events to be stored before stopping.
+	select {
+	case <-ins.storedN:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for all events to be stored")
+	}
+
+	close(ch)
+	c.Stop()
+
+	counts := spy.total()
+
+	// Verify mapped events were observed.
+	if got := counts["filesystem"]; got != 2 {
+		t.Errorf("filesystem observe count = %d, want 2", got)
+	}
+	if got := counts["process"]; got != 1 {
+		t.Errorf("process observe count = %d, want 1", got)
+	}
+
+	// Verify unmapped kinds produced zero observations.
+	for _, unmappedID := range []string{"idle", "pointer", "ai"} {
+		if n, ok := counts[unmappedID]; ok && n > 0 {
+			t.Errorf("unexpected Observe call for sourceID %q (count=%d)", unmappedID, n)
+		}
+	}
+
+	// Total observations must equal number of mapped events.
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	if total != len(mapped) {
+		t.Errorf("total Observe calls = %d, want %d (mapped events only)", total, len(mapped))
+	}
+}
+
+// TestCollector_RateObserverInjection_NilDefault verifies that New defaults to
+// the noop observer when no WithRateObserver option is passed, and that drain
+// does not panic on unmapped kinds.
+func TestCollector_RateObserverInjection_NilDefault(t *testing.T) {
+	ins := newCountingInserter(2)  // wait for both events to be stored
+	c := New(ins, discardLogger()) // no option — must not panic
+
+	ch := make(chan event.Event, 2)
+	c.Add(&mockSource{name: "src", ch: ch})
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ch <- makeEvent(event.KindFile, "src")
+	ch <- makeEvent(event.KindIdle, "src")
+
+	select {
+	case <-ins.storedN:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for events to be stored")
+	}
+
+	close(ch)
+	c.Stop()
+}
+
 // TestDrain_contextCancellation verifies that drain exits cleanly when the
 // parent context is cancelled, even when the source channel is never closed.
 func TestDrain_contextCancellation(t *testing.T) {

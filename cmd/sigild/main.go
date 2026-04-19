@@ -255,8 +255,10 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// --- Collector ----------------------------------------------------------
 	terminalSrc := sources.NewTerminalSource()
 
+	rateObs := newRateCounter(nil) // nil clock → time.Now
+
 	srcs := cfg.fileCfg.Sources
-	col := collector.New(db, log)
+	col := collector.New(db, log, collector.WithRateObserver(rateObs))
 	if srcs.Files.IsEnabled(true) {
 		col.Add(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
 	}
