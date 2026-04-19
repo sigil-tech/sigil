@@ -176,8 +176,9 @@ func serializeProcess(p map[string]any) (subject, subjectDim, sizeChip, contentC
 
 func serializeTerminal(p map[string]any) (subject, subjectDim, sizeChip, contentClass string) {
 	cmd, _ := p["cmd"].(string)
-	// argv[0] only — split on space and take first token.
-	if idx := strings.IndexByte(cmd, ' '); idx >= 0 {
+	// argv[0] only — split on any ASCII whitespace before normalization so
+	// that inputs like "bash\n--norc\r\n-i" do not leak argv into Subject.
+	if idx := strings.IndexAny(cmd, " \t\n\r"); idx >= 0 {
 		subject = cmd[:idx]
 	} else {
 		subject = cmd
