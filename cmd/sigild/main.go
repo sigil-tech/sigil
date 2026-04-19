@@ -1136,7 +1136,7 @@ func registerHandlers(
 	})
 
 	// metrics — process-level resource metrics for the panel.
-	srv.Handle("metrics", func(_ context.Context, _ socket.Request) socket.Response {
+	srv.Handle("metrics", func(ctx context.Context, _ socket.Request) socket.Response {
 		pid := os.Getpid()
 		sigildRSS, _ := socket.ProcRSS(pid)
 		result := map[string]any{
@@ -1164,6 +1164,37 @@ func registerHandlers(
 			llamaInfo["context_tokens_used"] = 0
 		}
 		result["llama_server"] = llamaInfo
+
+		// ── FR-022 VM metrics (spec 028 Phase 6b) ────────────────────────────
+
+		// vm_sessions_active{} — count of sessions in non-terminal states.
+		// Queried directly from the DB; non-fatal on error (returns -1 sentinel).
+		var activeCount int64 = -1
+		if err := db.DB().QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sessions WHERE status IN ('booting','ready','connecting','stopping')`,
+		).Scan(&activeCount); err != nil {
+			activeCount = -1
+		}
+		result["vm_sessions_active"] = activeCount
+
+		// vm_merge_duration_seconds{outcome} — per-outcome histogram snapshot.
+		result["vm_merge_duration_seconds"] = MergeDurationSnapshot()
+
+		// vm_events_per_sec{vm_id} — rolling rate from kenazproto VM-origin
+		// rate counter.  The per-VM rate counter is introduced in Phase 7 when
+		// the kenazproto broadcast path is wired.  Stubbed as an empty map with
+		// a TODO until then.
+		// TODO(Phase 7): read per-vm_id rate from kenazproto when the broadcast
+		// fan-out path is wired and rate counters are populated.
+		result["vm_events_per_sec"] = map[string]float64{}
+
+		// topic_drops_total{topic} — cumulative drop counts from the socket
+		// server's per-topic non-blocking send overflow (Phase 6 backpressure).
+		result["topic_drops_total"] = map[string]int64{
+			"vm-events":       socket.TopicDrops("vm-events"),
+			"observer-events": socket.TopicDrops("observer-events"),
+		}
+
 		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
 	})
 
@@ -2635,13 +2666,18 @@ func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
 			return socket.Response{Error: "merge_precondition_failed: session quarantined"}
 		}
 
+		mergeStart := time.Now()
 		result, err := merge.Merge(ctx, st.DB(), sess.VMDBPath, p.SessionID, cfg.fileCfg)
+		mergeElapsed := time.Since(mergeStart)
 		if err != nil {
+			// Observe failed duration (FR-022 vm_merge_duration_seconds).
+			ObserveMergeDuration("failed", mergeElapsed.Nanoseconds())
 			return socket.Response{Error: err.Error()}
 		}
 
 		// Update session merge outcome.
 		outcome := vm.MergeOutcomePending
+		metricOutcome := string(result.Status) // matches FR-022 outcome label set
 		switch result.Status {
 		case merge.MergeStatusComplete:
 			outcome = vm.MergeOutcomeComplete
@@ -2649,7 +2685,12 @@ func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
 			outcome = vm.MergeOutcomePartial
 		case merge.MergeStatusFailed:
 			outcome = vm.MergeOutcomeFailed
+		case merge.MergeStatusAlreadyComplete:
+			metricOutcome = "already_complete"
 		}
+		// Observe merge duration (FR-022 vm_merge_duration_seconds{outcome}).
+		ObserveMergeDuration(metricOutcome, mergeElapsed.Nanoseconds())
+
 		if outcome != vm.MergeOutcomePending {
 			_ = vmMgr.Finalize(ctx, p.SessionID, outcome)
 		}
