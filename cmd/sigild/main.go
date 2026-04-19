@@ -93,8 +93,9 @@ type daemonConfig struct {
 	notifierLevel int
 	logLevel      string
 	digestTime    string
-	configPath    string         // path to the TOML config file on disk
-	fileCfg       *config.Config // resolved file config (for handlers that need it)
+	configPath    string             // path to the TOML config file on disk
+	fileCfg       *config.Config     // resolved file config (for handlers that need it)
+	mgr           *collector.Manager // set during run; used by set-config handler (Phase 5)
 }
 
 func parseFlags() daemonConfig {
@@ -258,24 +259,36 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	rateObs := newRateCounter(nil) // nil clock → time.Now
 
 	srcs := cfg.fileCfg.Sources
-	col := collector.New(db, log, collector.WithRateObserver(rateObs))
-	if srcs.Files.IsEnabled(true) {
-		col.Add(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
-	}
-	if srcs.Process.IsEnabled(true) {
-		col.Add(&sources.ProcessSource{})
-	}
-	if srcs.Git.IsEnabled(true) {
-		col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
-	}
-	col.Add(terminalSrc)
-	col.Add(&sources.HyprlandSource{})
-	addPlatformSources(col, log, srcs)
 
-	if err := col.Start(ctx); err != nil {
+	// Construct the Collector and wrap it in a Manager. The Manager owns the
+	// lifecycle of the four Kenaz-managed sources (files, git, process,
+	// clipboard) and can reload them individually at runtime via Reload.
+	// Always-on sources (terminal, hyprland, platform-specific) are added
+	// directly to the Collector and started by the Collector's own drain loop.
+	colRaw := collector.New(db, log, collector.WithRateObserver(rateObs))
+	mgr := collector.NewManager(colRaw, log)
+
+	// Kenaz-managed sources — registered with Manager for Reload support.
+	mgr.AddSource(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
+	mgr.AddSource(&sources.ProcessSource{})
+	mgr.AddSource(&sources.GitSource{RepoPaths: cfg.repoPaths})
+
+	// Always-on sources — added directly to the Collector.
+	colRaw.Add(terminalSrc)
+	colRaw.Add(&sources.HyprlandSource{})
+	addPlatformSources(colRaw, log, srcs)
+
+	if err := mgr.Start(ctx, srcs); err != nil {
 		return fmt.Errorf("start collector: %w", err)
 	}
 	log.Info("collector started")
+
+	// Expose the manager for later use by the set-config handler (Phase 5).
+	cfg.mgr = mgr
+
+	// col is a convenience alias for the underlying Collector; consumers that
+	// need Subscribe or Broadcast should use it directly.
+	col := mgr.Collector()
 
 	// --- Task Tracker -------------------------------------------------------
 	taskTracker := task.NewTracker(db, log)
@@ -997,7 +1010,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 
 	drainWithTimeout(log, 10*time.Second, func() {
 		srv.Stop()
-		col.Stop()
+		mgr.Stop()
 	})
 
 	log.Info("sigild stopped cleanly")
