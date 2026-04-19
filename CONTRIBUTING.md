@@ -106,6 +106,40 @@ is built from the `sigil-launcher-macos` repository as a Swift Package target
 - `sigild-vz` must be co-located with the `sigild` binary (same directory) or
   pointed to by the `SIGILD_VZ_BINARY` environment variable.
 
+## Daemon Metrics (`sigilctl metrics`)
+
+`sigilctl metrics` calls the `metrics` Unix socket method and prints the full
+JSON payload.  The following fields are emitted as of spec 028 Phase 6b:
+
+| Field | Type | Description |
+|---|---|---|
+| `vm_sessions_active` | `int64` | Count of sessions in states `booting`, `ready`, `connecting`, or `stopping`. Queried live from the `sessions` table on every call. |
+| `vm_merge_duration_seconds` | object | Per-outcome histogram.  Keys: `complete`, `partial`, `failed`, `already_complete`.  Each value is `{"count": N, "sum_seconds": F}`.  `sum_seconds / count` gives mean merge latency.  All four keys are always present even before any merge has run (zeroed). |
+| `vm_events_per_sec` | object | Per-VM-ID event throughput.  Keys are VM UUIDs; values are `float64` events/second.  Stubbed as an empty object in Phase 6b — populated in Phase 7. |
+| `topic_drops_total` | object | Cumulative count of events dropped due to full subscriber buffers, by topic.  Keys: `vm-events`, `observer-events`.  Increments when a 256-slot per-subscriber channel is full and the server cannot deliver without blocking. |
+
+Example output:
+
+```json
+{
+  "vm_sessions_active": 1,
+  "vm_merge_duration_seconds": {
+    "complete":          {"count": 3, "sum_seconds": 4.812},
+    "partial":           {"count": 1, "sum_seconds": 2.104},
+    "failed":            {"count": 0, "sum_seconds": 0},
+    "already_complete":  {"count": 0, "sum_seconds": 0}
+  },
+  "vm_events_per_sec": {},
+  "topic_drops_total": {
+    "vm-events":       0,
+    "observer-events": 0
+  }
+}
+```
+
+These counters are in-process only — they reset when `sigild` restarts.
+No external metrics scraper or Prometheus endpoint is involved.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
