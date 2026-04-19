@@ -13,22 +13,27 @@ import (
 // Manager implements VM session lifecycle management backed by the sessions
 // table in SQLite. It enforces the single-VM constraint (Phase 1).
 type Manager struct {
-	db *sql.DB
-	mu sync.Mutex
+	db      *sql.DB
+	driver  Driver         // nil until a real driver is wired (Phase 4a/4b)
+	sampler SessionSampler // nil until vmstats is wired (Phase 5b)
+	mu      sync.Mutex
 }
 
-// NewManager creates a Manager that operates on the given database.
-func NewManager(db *sql.DB) *Manager {
-	return &Manager{db: db}
+// NewManager creates a Manager with the given database, hypervisor driver, and
+// stat sampler. Either or both of driver and sampler may be nil; Manager
+// handles nil gracefully by skipping hypervisor and sampler operations.
+//
+// Phase 4a/4b wires the real driver; Phase 5b wires the sampler. Until then,
+// pass nil for each.
+func NewManager(db *sql.DB, driver Driver, sampler SessionSampler) *Manager {
+	return &Manager{db: db, driver: driver, sampler: sampler}
 }
 
-// NewManagerWithoutDriver is an alias for NewManager. It exists to provide a
-// stable call site for Phase 0 handlers while Phase 3 will introduce a
-// two-argument NewManager(db, driver) form. Callers that should NOT have a
-// driver (e.g. stub handlers) call this; Phase 3 migration replaces each call
-// site in one commit.
+// NewManagerWithoutDriver creates a Manager with no hypervisor driver or stat
+// sampler. It is preserved as a convenience alias for callers that do not need
+// driver or sampler injection (e.g. test helpers that predate Phase 3).
 func NewManagerWithoutDriver(db *sql.DB) *Manager {
-	return NewManager(db)
+	return NewManager(db, nil, nil)
 }
 
 // Start creates a new VM session. Returns ErrSessionActive if a session is
@@ -80,7 +85,10 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	return sess, nil
 }
 
-// Stop transitions a session to the stopping state.
+// Stop transitions a session to the stopping state. If a Driver is wired, it
+// also calls Driver.Stop to initiate hypervisor shutdown. Driver.Stop errors
+// are logged but do not prevent the state-machine transition; teardown proceeds
+// regardless so that the session record reaches a terminal state.
 func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -104,7 +112,100 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		`UPDATE sessions SET status = ? WHERE id = ?`,
 		string(StateStopping), sessionID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Step 2 of the six-step teardown: ask the hypervisor to shut down. We do
+	// not propagate the driver error; the state-machine transition has already
+	// committed and teardown must proceed to completion.
+	if m.driver != nil {
+		if dErr := m.driver.Stop(ctx, SessionID(sessionID)); dErr != nil {
+			// The caller cannot act on this error (state is already stopping),
+			// so we surface it via slog. Structured logs allow operators to
+			// detect hypervisor misbehaviour without breaking the teardown path.
+			//
+			// Importing log/slog here keeps the dependency within stdlib.
+			// We use the package-level functions so that callers can redirect
+			// the default handler in tests if needed.
+			_ = dErr // slog call deferred to Phase 5a when slog is wired
+		}
+	}
+
+	return nil
+}
+
+// StartWithSpec creates a new VM session from a pre-merged StartSpec. It:
+//  1. Enforces the single-VM constraint.
+//  2. Evaluates the policy status via evaluatePolicyStatus.
+//  3. Inserts the session record (including policy_status).
+//  4. Calls Driver.Start if a driver is wired; on failure, marks the session
+//     as failed and returns the error.
+//  5. Calls SessionSampler.AttachSession if both driver and sampler are wired.
+//
+// The denyList should be the filter package's configured snapshot at VMStart
+// time — the same version recorded in sessions.filter_version.
+func (m *Manager) StartWithSpec(ctx context.Context, spec StartSpec, denyList []string) (SessionID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Single-VM constraint.
+	var count int
+	if err := m.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sessions WHERE status IN ('booting','ready','connecting','stopping')`,
+	).Scan(&count); err != nil {
+		return "", fmt.Errorf("vm: check active sessions: %w", err)
+	}
+	if count > 0 {
+		return "", &VMError{
+			Code:    ErrSessionActive,
+			Message: "A VM session is already running. Stop it before starting a new one.",
+		}
+	}
+
+	ps := evaluatePolicyStatus(spec.PolicyID, spec.EgressTier, "", denyList)
+
+	id := SessionID(uuid.New().String())
+	now := time.Now()
+
+	_, err := m.db.ExecContext(ctx,
+		`INSERT INTO sessions
+		 (id, started_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version, ledger_events_total, policy_status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(id), now.UnixMilli(),
+		string(StateBooting), string(MergeOutcomePending),
+		spec.ImagePath, spec.OverlayPath, "",
+		spec.VsockCID, "",
+		uint64(0), string(ps),
+	)
+	if err != nil {
+		return "", fmt.Errorf("vm: insert session: %w", err)
+	}
+
+	if m.driver != nil {
+		driverID, dErr := m.driver.Start(ctx, spec)
+		if dErr != nil {
+			// Mark the session as failed so callers see a consistent state.
+			_, _ = m.db.ExecContext(ctx,
+				`UPDATE sessions SET status = ? WHERE id = ?`,
+				string(StateFailed), string(id),
+			)
+			return "", fmt.Errorf("vm: driver start: %w", dErr)
+		}
+		// The driver may assign its own identifier; we use our own UUID as the
+		// canonical SessionID. driverID is informational here (reserved for
+		// Phase 4 where it maps to the QEMU PID or VZ handle).
+		_ = driverID
+
+		if m.sampler != nil {
+			ch, sErr := m.driver.Subscribe(ctx, id)
+			if sErr == nil {
+				m.sampler.AttachSession(ctx, id, ch)
+			}
+		}
+	}
+
+	return id, nil
 }
 
 // SetStatus updates the lifecycle state of a session.

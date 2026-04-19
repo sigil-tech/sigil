@@ -2395,7 +2395,7 @@ func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
 // vmMgr is created from the store's raw *sql.DB so that sessions table
 // operations stay outside the store.ReadWriter abstraction.
 func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
-	vmMgr := vm.NewManager(st.DB())
+	vmMgr := vm.NewManager(st.DB(), nil, nil)
 
 	srv.Handle("VMStart", func(ctx context.Context, req socket.Request) socket.Response {
 		var p struct {

@@ -73,9 +73,36 @@ type StartRequest struct {
 
 // Error codes returned by VM operations.
 const (
-	ErrSessionActive   = "ERR_SESSION_ACTIVE"
-	ErrImageMissing    = "ERR_IMAGE_MISSING"
-	ErrSessionNotFound = "ERR_SESSION_NOT_FOUND"
+	ErrSessionActive         = "ERR_SESSION_ACTIVE"
+	ErrImageMissing          = "ERR_IMAGE_MISSING"
+	ErrSessionNotFound       = "ERR_SESSION_NOT_FOUND"
+	ErrHypervisorUnavailable = "ERR_HYPERVISOR_UNAVAILABLE"
+)
+
+// PolicyStatus is the static per-session policy verdict recorded in
+// sessions.policy_status at VMStart time. The value reflects the policy
+// configuration verdict for the submitted profile; it is written once and
+// never mutated during the session's lifetime. See ADR-028c.
+type PolicyStatus string
+
+const (
+	// PolicyStatusOK means the policy check passed; the session profile is
+	// valid, the policyID is not revoked, and egress is compatible.
+	PolicyStatusOK PolicyStatus = "ok"
+
+	// PolicyStatusPending is reserved for post-MVP approval workflows. In the
+	// MVP, all approvals are resolved launcher-side before VMStart is called,
+	// so this value is unreachable in practice.
+	PolicyStatusPending PolicyStatus = "pending"
+
+	// PolicyStatusDenied means the policyID was found in the denylist at
+	// VMStart time, or the requested egressTier is incompatible with the
+	// policy's declared tier.
+	PolicyStatusDenied PolicyStatus = "denied"
+
+	// PolicyStatusNotApplicable means no policyID was supplied (free-form
+	// session; no policy governance applied).
+	PolicyStatusNotApplicable PolicyStatus = "not_applicable"
 )
 
 // VMError represents a structured VM operation error.

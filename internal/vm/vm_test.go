@@ -46,7 +46,7 @@ func testDB(t *testing.T) *sql.DB {
 
 func TestStartSession(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	sess, err := mgr.Start(ctx, StartRequest{
@@ -67,7 +67,7 @@ func TestStartSession(t *testing.T) {
 
 func TestSingleVMConstraint(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	_, err := mgr.Start(ctx, StartRequest{DiskImagePath: "/images/base.qcow2"})
@@ -90,7 +90,7 @@ func TestSingleVMConstraint(t *testing.T) {
 
 func TestStopSession(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	sess, _ := mgr.Start(ctx, StartRequest{DiskImagePath: "/images/base.qcow2"})
@@ -110,7 +110,7 @@ func TestStopSession(t *testing.T) {
 
 func TestStopNotFound(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	err := mgr.Stop(ctx, "nonexistent")
@@ -128,7 +128,7 @@ func TestStopNotFound(t *testing.T) {
 
 func TestFinalizeSession(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	sess, _ := mgr.Start(ctx, StartRequest{DiskImagePath: "/images/base.qcow2"})
@@ -152,7 +152,7 @@ func TestFinalizeSession(t *testing.T) {
 
 func TestListSessions(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	// Start and finalize a session so we can start another.
@@ -173,7 +173,7 @@ func TestListSessions(t *testing.T) {
 
 func TestActiveSession(t *testing.T) {
 	db := testDB(t)
-	mgr := NewManager(db)
+	mgr := NewManagerWithoutDriver(db)
 	ctx := context.Background()
 
 	// No active session.

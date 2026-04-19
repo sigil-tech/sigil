@@ -28,3 +28,11 @@ packages:
       Platform:
         config:
           dir: "internal/notifier/mocks"
+  github.com/sigil-tech/sigil/internal/vm:
+    interfaces:
+      Driver:
+        config:
+          dir: "internal/vm/mocks"
+      SessionSampler:
+        config:
+          dir: "internal/vm/mocks"
