@@ -18,7 +18,7 @@ func testDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Create sessions table (migration v2)
+	// Create sessions table matching the current schema (migrations v2 + v5 + v6).
 	_, err = db.Exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA foreign_keys = ON;
@@ -32,7 +32,9 @@ func testDB(t *testing.T) *sql.DB {
 			overlay_path TEXT NOT NULL DEFAULT '',
 			vm_db_path TEXT NOT NULL DEFAULT '',
 			vsock_cid INTEGER NOT NULL DEFAULT 0,
-			filter_version TEXT NOT NULL DEFAULT ''
+			filter_version TEXT NOT NULL DEFAULT '',
+			ledger_events_total INTEGER NOT NULL DEFAULT 0,
+			policy_status TEXT NOT NULL DEFAULT 'ok'
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 	`)
