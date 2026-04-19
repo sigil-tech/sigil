@@ -58,6 +58,7 @@ import (
 	signsync "github.com/sigil-tech/sigil/internal/sync"
 	"github.com/sigil-tech/sigil/internal/task"
 	"github.com/sigil-tech/sigil/internal/vm"
+	"github.com/sigil-tech/sigil/internal/vmstats"
 )
 
 func main() {
@@ -2396,8 +2397,14 @@ func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
 // registerVMHandlers registers VM lifecycle and merge socket handlers.
 // vmMgr is created from the store's raw *sql.DB so that sessions table
 // operations stay outside the store.ReadWriter abstraction.
+//
+// The sampler is wired here so that VMList can surface live cpu/mem stats
+// without a separate RPC. The driver is nil until Phase 4a/4b produces a
+// platform driver; the sampler still wires so that Phase 5b is fully wired
+// independently of Phase 4a/4b.
 func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
-	vmMgr := vm.NewManager(st.DB(), nil, nil)
+	sampler := vmstats.NewSampler()
+	vmMgr := vm.NewManager(st.DB(), nil, sampler)
 
 	srv.Handle("VMStart", func(ctx context.Context, req socket.Request) socket.Response {
 		// StartVMProfile — the Kenaz-side profile request payload.
@@ -2517,7 +2524,25 @@ func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
 		if err != nil {
 			return socket.Response{Error: err.Error()}
 		}
-		return socket.Response{OK: true, Payload: socket.MarshalPayload(sessions)}
+
+		// Enrich each session with live stat fields from the sampler.
+		// cpu and mem carry a " ~" staleness suffix when the snapshot is older
+		// than 3 s per FR-011. ledger_events_total is a scalar from the session
+		// row (never per-event breakdown — FR-020).
+		type sessionView struct {
+			vm.Session
+			CPU string `json:"cpu,omitempty"`
+			Mem string `json:"mem,omitempty"`
+		}
+		views := make([]sessionView, len(sessions))
+		for i, sess := range sessions {
+			views[i] = sessionView{
+				Session: sess,
+				CPU:     sampler.FormatCPU(vm.SessionID(sess.ID)),
+				Mem:     sampler.FormatMem(vm.SessionID(sess.ID)),
+			}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(views)}
 	})
 
 	srv.Handle("VMMerge", func(ctx context.Context, req socket.Request) socket.Response {
