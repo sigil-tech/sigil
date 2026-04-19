@@ -2,6 +2,7 @@ package kenazproto
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"unicode/utf8"
@@ -123,7 +124,7 @@ func serializeFile(p map[string]any) (subject, subjectDim, sizeChip, contentClas
 	ext, _ := p["ext"].(string)
 	delta, _ := p["delta"].(string)
 
-	subject = truncatePathLeft(path, 256)
+	subject = fileSubjectFromPath(path)
 	subjectDim = ext
 	sizeChip = delta
 	contentClass = ContentClassMetadataOnly
@@ -449,6 +450,74 @@ func capBytesWithFlag(s string, max int) (result string, truncated bool) {
 		return s, false
 	}
 	return capBytes(s, max), true
+}
+
+// fileSubjectFromPath derives the privacy-filtered Subject for KindFile events.
+//
+// Algorithm (per ADR-027a):
+//  1. Clean the path with filepath.Clean.
+//  2. Split on filepath.Separator; discard empty segments (handles leading /).
+//  3. Take the last two segments, joined with "/".
+//  4. Prefix "…/" (U+2026 + /) when the original post-Clean depth exceeds 2.
+//
+// Edge cases:
+//   - Empty input → "".
+//   - Single component → that component (no prefix).
+//   - Two components → "parent/filename" (no prefix).
+//   - Root-only ("/") → "".
+//
+// The join separator is always "/" regardless of OS. On Windows (future scope),
+// filepath.Separator is '\' but the display join remains '/'. No algorithm
+// change is needed for Windows; the split-on-separator, join-with-slash rule
+// handles both platforms correctly.
+//
+// The implementation uses a single-pass scan to avoid heap allocation on the
+// hot path: rather than building a slice of all components, it records only the
+// start indices of the last two non-empty segments.
+func fileSubjectFromPath(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+	p := filepath.Clean(rawPath)
+	sep := filepath.Separator
+
+	// Single-pass scan: track positions of the last two segment boundaries.
+	// prev2Start/prev1Start are byte offsets into p where the penultimate and
+	// last segment begin.  n counts non-empty segments.
+	n := 0
+	prev2Start, prev1Start := -1, -1
+	i := 0
+	for i < len(p) {
+		// Skip separator(s) and the leading root slash.
+		for i < len(p) && rune(p[i]) == sep {
+			i++
+		}
+		if i >= len(p) {
+			break
+		}
+		// Mark start of this segment.
+		start := i
+		// Advance to next separator or end.
+		for i < len(p) && rune(p[i]) != sep {
+			i++
+		}
+		// Record last two start positions.
+		n++
+		prev2Start = prev1Start
+		prev1Start = start
+	}
+
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return p[prev1Start:]
+	case 2:
+		return p[prev2Start:prev1Start-1] + "/" + p[prev1Start:]
+	default:
+		// n > 2: emit "…/<penultimate>/<last>".
+		return "…/" + p[prev2Start:prev1Start-1] + "/" + p[prev1Start:]
+	}
 }
 
 // truncatePathLeft truncates path to at most max bytes, keeping the rightmost

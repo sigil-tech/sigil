@@ -11,7 +11,7 @@ Sigil observes your workflow at the metadata level — never the content:
 
 | Signal | What is recorded |
 |--------|-----------------|
-| **File system** | File paths that were created, modified, or deleted — not file contents |
+| **File system** | File paths that were created, modified, or deleted — not file contents. Full paths are stored only in the local SQLite database. When file-activity events are surfaced through the Kenaz Observer live feed, only the last two path components are displayed (e.g. `…/kenazproto/serialize.go`); no path data leaves the local machine in any form. |
 | **Terminal commands** | The command string and exit code — not stdin/stdout output |
 | **Git activity** | Commit counts, branch names, and repository paths — not diffs or commit messages |
 | **Process names** | Names of running processes (e.g., `nvim`, `go`, `docker`) — not arguments or environment variables |

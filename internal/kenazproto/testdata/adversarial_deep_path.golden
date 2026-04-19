@@ -1,11 +1,11 @@
 {
-  "id": 2003,
+  "id": 2006,
   "origin": "host",
   "source_id": "filesystem",
   "timestamp": 1768478400000,
   "kind": "file",
-  "subject": "…/nick/���bad���path.go",
-  "subject_dim": ".go",
+  "subject": "…/penultimate/filename.ext",
+  "subject_dim": ".ext",
   "size_chip": "",
   "content_class": "metadata-only"
 }

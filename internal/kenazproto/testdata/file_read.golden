@@ -4,7 +4,7 @@
   "source_id": "filesystem",
   "timestamp": 1768478400000,
   "kind": "file",
-  "subject": "/home/nick/workspace/sigil/go.mod",
+  "subject": "…/sigil/go.mod",
   "subject_dim": ".mod",
   "size_chip": "",
   "content_class": "metadata-only"

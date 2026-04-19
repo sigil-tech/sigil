@@ -324,6 +324,27 @@ func TestSerialize_GoldenAdversarial(t *testing.T) {
 		checkGolden(t, "adversarial_binary_bytes", ke)
 	})
 
+	// adversarial_deep_path: 10-level absolute path must emit only the last two
+	// components prefixed with "…/".  Confirms the truncation invariant holds
+	// regardless of path depth.
+	t.Run("adversarial_deep_path", func(t *testing.T) {
+		evt := event.Event{
+			ID:        2006,
+			Kind:      event.KindFile,
+			Source:    "host",
+			Timestamp: fixedTime,
+			Payload: map[string]any{
+				"path": "/a/b/c/d/e/f/g/h/penultimate/filename.ext",
+				"ext":  ".ext",
+				"op":   "write",
+			},
+		}
+		ke, ok := kenazproto.Serialize(evt)
+		require.True(t, ok)
+		assert.Equal(t, "…/penultimate/filename.ext", ke.Subject)
+		checkGolden(t, "adversarial_deep_path", ke)
+	})
+
 	// adversarial_10kb_subject: oversize file path must be dropped (>256 bytes
 	// after left-truncation cannot be produced from truncatePathLeft since it
 	// caps at 256; test that a synthetic path of exactly 257 bytes in Subject
@@ -575,6 +596,70 @@ var allKindInputs = []event.Event{
 		Payload: map[string]any{"id": "1", "name": "desktop 1"}},
 	{ID: 12, Kind: event.KindAppState, Source: "host", Timestamp: fixedTime,
 		Payload: map[string]any{"app": "Slack", "state": "hidden"}},
+}
+
+// ---------------------------------------------------------------------------
+// fileSubjectFromPath unit tests (ADR-027a Defect 1 fix)
+// ---------------------------------------------------------------------------
+
+func TestFileSubjectFromPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "deep path (5 levels) produces ellipsis prefix",
+			input: "/home/nick/workspace/sigil/internal/kenazproto/serialize.go",
+			want:  "…/kenazproto/serialize.go",
+		},
+		{
+			name:  "3-level path produces ellipsis prefix",
+			input: "/etc/sigil/config.toml",
+			want:  "…/sigil/config.toml",
+		},
+		{
+			name:  "2-level path produces no prefix",
+			input: "internal/store.go",
+			want:  "internal/store.go",
+		},
+		{
+			name:  "single component produces no prefix",
+			input: "go.mod",
+			want:  "go.mod",
+		},
+		{
+			name:  "empty string returns empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "trailing slash handled by filepath.Clean",
+			input: "/home/nick/workspace/sigil/",
+			want:  "…/workspace/sigil",
+		},
+		{
+			name:  "double slashes collapsed by filepath.Clean",
+			input: "/home//nick//workspace/sigil/go.mod",
+			want:  "…/sigil/go.mod",
+		},
+		{
+			name:  "root-only path returns empty string",
+			input: "/",
+			want:  "",
+		},
+		{
+			name:  "absolute 2-component path produces no prefix",
+			input: "/sigil/go.mod",
+			want:  "sigil/go.mod",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kenazproto.FileSubjectFromPath(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 // BenchmarkSerialize_AllKinds measures Serialize across all 12 mapped kinds.

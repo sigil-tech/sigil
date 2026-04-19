@@ -4,7 +4,7 @@
   "source_id": "filesystem",
   "timestamp": 1768478400000,
   "kind": "file",
-  "subject": "/home/nick/workspace/sigil/internal/kenazproto/serialize.go",
+  "subject": "…/kenazproto/serialize.go",
   "subject_dim": ".go",
   "size_chip": "+1.2K",
   "content_class": "metadata-only"
