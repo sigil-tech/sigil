@@ -1237,6 +1237,22 @@ var migrations = []migration{
 	{version: 2, name: "vm lifecycle tables", fn: migrateV2},
 	{version: 3, name: "corpus annotation and dedup", fn: migrateV3},
 	{version: 4, name: "finetuner tables", fn: migrateV4},
+	{
+		version: 5,
+		name:    "add_ledger_events_total_to_sessions",
+		fn: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN ledger_events_total INTEGER NOT NULL DEFAULT 0`)
+			return err
+		},
+	},
+	{
+		version: 6,
+		name:    "add_policy_status_to_sessions",
+		fn: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN policy_status TEXT NOT NULL DEFAULT 'ok'`)
+			return err
+		},
+	},
 }
 
 // migrate sets WAL mode and foreign keys, creates the schema_version table,

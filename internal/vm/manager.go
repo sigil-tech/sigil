@@ -53,22 +53,25 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error)
 	}
 
 	sess := &Session{
-		ID:            uuid.New().String(),
-		StartedAt:     time.Now(),
-		Status:        StateBooting,
-		MergeOutcome:  MergeOutcomePending,
-		DiskImagePath: req.DiskImagePath,
-		OverlayPath:   req.OverlayPath,
-		VMDBPath:      req.VMDBPath,
-		VsockCID:      req.VsockCID,
-		FilterVersion: req.FilterVersion,
+		ID:                uuid.New().String(),
+		StartedAt:         time.Now(),
+		Status:            StateBooting,
+		MergeOutcome:      MergeOutcomePending,
+		DiskImagePath:     req.DiskImagePath,
+		OverlayPath:       req.OverlayPath,
+		VMDBPath:          req.VMDBPath,
+		VsockCID:          req.VsockCID,
+		FilterVersion:     req.FilterVersion,
+		LedgerEventsTotal: 0,
+		PolicyStatus:      "ok",
 	}
 
 	_, err = m.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, started_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, started_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version, ledger_events_total, policy_status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.StartedAt.UnixMilli(), string(sess.Status), string(sess.MergeOutcome),
 		sess.DiskImagePath, sess.OverlayPath, sess.VMDBPath, sess.VsockCID, sess.FilterVersion,
+		sess.LedgerEventsTotal, sess.PolicyStatus,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("vm: insert session: %w", err)
@@ -126,14 +129,14 @@ func (m *Manager) Finalize(ctx context.Context, sessionID string, outcome MergeO
 // Status returns the current session by ID.
 func (m *Manager) Status(ctx context.Context, sessionID string) (*Session, error) {
 	return m.scanSession(m.db.QueryRowContext(ctx,
-		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version
+		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version, ledger_events_total, policy_status
 		 FROM sessions WHERE id = ?`, sessionID))
 }
 
 // ActiveSession returns the currently active session, or nil if none.
 func (m *Manager) ActiveSession(ctx context.Context) (*Session, error) {
 	sess, err := m.scanSession(m.db.QueryRowContext(ctx,
-		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version
+		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version, ledger_events_total, policy_status
 		 FROM sessions WHERE status IN ('booting','ready','connecting','stopping')
 		 ORDER BY started_at DESC LIMIT 1`))
 	if err == sql.ErrNoRows {
@@ -148,7 +151,7 @@ func (m *Manager) List(ctx context.Context, limit int) ([]Session, error) {
 		limit = 20
 	}
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version
+		`SELECT id, started_at, ended_at, status, merge_outcome, disk_image_path, overlay_path, vm_db_path, vsock_cid, filter_version, ledger_events_total, policy_status
 		 FROM sessions ORDER BY started_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("vm: list sessions: %w", err)
@@ -173,7 +176,8 @@ func (m *Manager) scanSession(row *sql.Row) (*Session, error) {
 	var status, outcome string
 
 	err := row.Scan(&s.ID, &startedMS, &endedMS, &status, &outcome,
-		&s.DiskImagePath, &s.OverlayPath, &s.VMDBPath, &s.VsockCID, &s.FilterVersion)
+		&s.DiskImagePath, &s.OverlayPath, &s.VMDBPath, &s.VsockCID, &s.FilterVersion,
+		&s.LedgerEventsTotal, &s.PolicyStatus)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +199,8 @@ func (m *Manager) scanSessionRow(rows *sql.Rows) (*Session, error) {
 	var status, outcome string
 
 	err := rows.Scan(&s.ID, &startedMS, &endedMS, &status, &outcome,
-		&s.DiskImagePath, &s.OverlayPath, &s.VMDBPath, &s.VsockCID, &s.FilterVersion)
+		&s.DiskImagePath, &s.OverlayPath, &s.VMDBPath, &s.VsockCID, &s.FilterVersion,
+		&s.LedgerEventsTotal, &s.PolicyStatus)
 	if err != nil {
 		return nil, err
 	}

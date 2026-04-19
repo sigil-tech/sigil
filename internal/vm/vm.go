@@ -48,16 +48,18 @@ const (
 
 // Session represents a VM sandbox session record in the sessions table.
 type Session struct {
-	ID            string         `json:"id"`
-	StartedAt     time.Time      `json:"started_at"`
-	EndedAt       *time.Time     `json:"ended_at,omitempty"`
-	Status        LifecycleState `json:"status"`
-	MergeOutcome  MergeOutcome   `json:"merge_outcome"`
-	DiskImagePath string         `json:"disk_image_path"`
-	OverlayPath   string         `json:"overlay_path,omitempty"`
-	VMDBPath      string         `json:"vm_db_path,omitempty"`
-	VsockCID      int            `json:"vsock_cid,omitempty"`
-	FilterVersion string         `json:"filter_version,omitempty"`
+	ID                string         `json:"id"`
+	StartedAt         time.Time      `json:"started_at"`
+	EndedAt           *time.Time     `json:"ended_at,omitempty"`
+	Status            LifecycleState `json:"status"`
+	MergeOutcome      MergeOutcome   `json:"merge_outcome"`
+	DiskImagePath     string         `json:"disk_image_path"`
+	OverlayPath       string         `json:"overlay_path,omitempty"`
+	VMDBPath          string         `json:"vm_db_path,omitempty"`
+	VsockCID          int            `json:"vsock_cid,omitempty"`
+	FilterVersion     string         `json:"filter_version,omitempty"`
+	LedgerEventsTotal uint64         `json:"ledger_events_total"`
+	PolicyStatus      string         `json:"policy_status"`
 }
 
 // StartRequest contains the parameters for starting a new VM session.

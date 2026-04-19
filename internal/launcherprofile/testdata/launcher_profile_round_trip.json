@@ -1,0 +1,16 @@
+{
+  "containerEngine": "docker",
+  "cpuCount": 2,
+  "diskImagePath": "/home/testuser/.sigil/images/sigil-vm.img",
+  "editor": "vscode",
+  "initrdPath": "/home/testuser/.sigil/images/initrd",
+  "kernelCommandLine": "console=hvc0 root=/dev/vda rw",
+  "kernelPath": "/home/testuser/.sigil/images/vmlinuz",
+  "memorySize": 4294967296,
+  "modelId": "llama-3.1-8b-instruct",
+  "modelPath": "/home/testuser/.sigil/models/llama-3.1-8b-instruct.gguf",
+  "notificationLevel": 2,
+  "shell": "zsh",
+  "sshPort": 2222,
+  "workspacePath": "/home/testuser/workspace"
+}
