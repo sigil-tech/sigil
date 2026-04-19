@@ -14,6 +14,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -44,6 +45,7 @@ import (
 	"github.com/sigil-tech/sigil/internal/event"
 	"github.com/sigil-tech/sigil/internal/finetuner"
 	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/launcherprofile"
 	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/mcp"
 	"github.com/sigil-tech/sigil/internal/merge"
@@ -2398,24 +2400,67 @@ func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
 	vmMgr := vm.NewManager(st.DB(), nil, nil)
 
 	srv.Handle("VMStart", func(ctx context.Context, req socket.Request) socket.Response {
+		// StartVMProfile — the Kenaz-side profile request payload.
 		var p struct {
+			Name       string   `json:"name"`
+			PolicyID   string   `json:"policy_id"`
+			Apps       []string `json:"apps"`
+			EgressTier string   `json:"egress_tier"`
+			// Legacy fields from stub phase kept for backwards compatibility with
+			// test helpers that predate the StartVMProfile shape.
 			DiskImagePath string `json:"disk_image_path"`
 			OverlayPath   string `json:"overlay_path"`
-			VMDBPath      string `json:"vm_db_path"`
-			VsockCID      int    `json:"vsock_cid"`
-			FilterVersion string `json:"filter_version"`
 		}
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return socket.Response{Error: "invalid payload: " + err.Error()}
 		}
 
-		sess, err := vmMgr.Start(ctx, vm.StartRequest{
-			DiskImagePath: p.DiskImagePath,
-			OverlayPath:   p.OverlayPath,
-			VMDBPath:      p.VMDBPath,
-			VsockCID:      p.VsockCID,
-			FilterVersion: p.FilterVersion,
-		})
+		// Read the LauncherProfile from disk. A missing profile is a
+		// recoverable user-facing error — return ERR_PROFILE_MISSING so the
+		// Kenaz UI can prompt the user to configure the launcher.
+		lp, err := launcherprofile.Read()
+		if err != nil {
+			if errors.Is(err, launcherprofile.ErrProfileMissing) {
+				return socket.Response{Error: vm.ErrProfileMissing + ": " + err.Error()}
+			}
+			return socket.Response{Error: "read launcher profile: " + err.Error()}
+		}
+
+		// Merge LauncherProfile fields with the request payload to form the
+		// StartSpec. Fields from the request payload take precedence for
+		// policy/egress; fields from LauncherProfile govern hypervisor
+		// provisioning (image, resources, workbench config).
+		imagePath := lp.DiskImagePath
+		if p.DiskImagePath != "" {
+			// Allow explicit override in the request (used by tests and
+			// admin flows). Production callers leave this empty.
+			imagePath = p.DiskImagePath
+		}
+		overlayPath := p.OverlayPath
+
+		spec := vm.StartSpec{
+			Name:       p.Name,
+			PolicyID:   p.PolicyID,
+			Apps:       p.Apps,
+			EgressTier: p.EgressTier,
+
+			ImagePath:       imagePath,
+			Editor:          lp.Editor,
+			Shell:           lp.Shell,
+			ContainerEngine: lp.ContainerEngine,
+			MemoryMB:        lp.MemorySize / (1024 * 1024), // bytes → MB
+			CPUCount:        uint8(lp.CPUCount),
+			OverlayPath:     overlayPath,
+			// VsockCID: assigned by driver (Phase 4a); zero until then.
+		}
+
+		// TODO(Phase 6): pass filter.Snapshot() denyList here. For now pass
+		// an empty slice — policy evaluation still runs but without a denylist.
+		id, err := vmMgr.StartWithSpec(ctx, spec, nil)
+		if err != nil {
+			return socket.Response{Error: err.Error()}
+		}
+		sess, err := vmMgr.Status(ctx, string(id))
 		if err != nil {
 			return socket.Response{Error: err.Error()}
 		}

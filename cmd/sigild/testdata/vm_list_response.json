@@ -1,0 +1,11 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "started_at": "2026-01-01T00:00:00Z",
+    "status": "booting",
+    "merge_outcome": "pending",
+    "disk_image_path": "/images/base.qcow2",
+    "ledger_events_total": 0,
+    "policy_status": "not_applicable"
+  }
+]

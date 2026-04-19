@@ -72,16 +72,18 @@ func createHostDB(t *testing.T) *sql.DB {
 
 	stmts := []string{
 		`CREATE TABLE sessions (
-			id               TEXT    PRIMARY KEY,
-			started_at       INTEGER NOT NULL,
-			ended_at         INTEGER,
-			status           TEXT    NOT NULL,
-			merge_outcome    TEXT    NOT NULL DEFAULT 'pending',
-			disk_image_path  TEXT    NOT NULL,
-			overlay_path     TEXT    NOT NULL DEFAULT '',
-			vm_db_path       TEXT    NOT NULL DEFAULT '',
-			vsock_cid        INTEGER NOT NULL DEFAULT 0,
-			filter_version   TEXT    NOT NULL DEFAULT ''
+			id                   TEXT    PRIMARY KEY,
+			started_at           INTEGER NOT NULL,
+			ended_at             INTEGER,
+			status               TEXT    NOT NULL,
+			merge_outcome        TEXT    NOT NULL DEFAULT 'pending',
+			disk_image_path      TEXT    NOT NULL,
+			overlay_path         TEXT    NOT NULL DEFAULT '',
+			vm_db_path           TEXT    NOT NULL DEFAULT '',
+			vsock_cid            INTEGER NOT NULL DEFAULT 0,
+			filter_version       TEXT    NOT NULL DEFAULT '',
+			ledger_events_total  INTEGER NOT NULL DEFAULT 0,
+			policy_status        TEXT    NOT NULL DEFAULT 'ok'
 		)`,
 		`CREATE TABLE training_corpus (
 			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -474,4 +476,34 @@ func TestDBSizeValidation(t *testing.T) {
 		`SELECT status FROM merge_log WHERE session_id = ?`, sessionID,
 	).Scan(&logStatus))
 	assert.Equal(t, "failed", logStatus)
+}
+
+// TestMergeWritesLedgerEventsTotal asserts Amendment C: a successful Merge call
+// writes sessions.ledger_events_total = rows_merged as part of the completion
+// step. This is the scalar count that VMList exposes to the Kenaz client
+// (FR-020) without a join to merge_log.
+func TestMergeWritesLedgerEventsTotal(t *testing.T) {
+	hostDB := createHostDB(t)
+	sessionID := "sess-ledger-001"
+	seedSession(t, hostDB, sessionID)
+
+	events := []testEvent{
+		{kind: "file", source: "watcher", payload: map[string]any{"path": "/src/main.go"}},
+		{kind: "terminal", source: "shell", payload: map[string]any{"cmd": "go test ./..."}},
+		{kind: "git", source: "git", payload: map[string]any{"branch": "main"}},
+	}
+	vmPath := createVMDB(t, events)
+
+	result, err := Merge(context.Background(), hostDB, vmPath, sessionID, defaultCfg())
+	require.NoError(t, err)
+	require.Equal(t, MergeStatusComplete, result.Status)
+	require.Equal(t, 3, result.RowsMerged)
+
+	// Amendment C assertion: sessions.ledger_events_total must equal rows_merged.
+	var ledgerTotal int
+	require.NoError(t, hostDB.QueryRow(
+		`SELECT ledger_events_total FROM sessions WHERE id = ?`, sessionID,
+	).Scan(&ledgerTotal))
+	assert.Equal(t, result.RowsMerged, ledgerTotal,
+		"sessions.ledger_events_total must equal the number of rows merged")
 }

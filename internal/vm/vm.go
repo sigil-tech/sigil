@@ -77,6 +77,10 @@ const (
 	ErrImageMissing          = "ERR_IMAGE_MISSING"
 	ErrSessionNotFound       = "ERR_SESSION_NOT_FOUND"
 	ErrHypervisorUnavailable = "ERR_HYPERVISOR_UNAVAILABLE"
+	// ErrProfileMissing is returned by VMStart when the LauncherProfile JSON
+	// file does not exist on disk. The Kenaz UI uses this code to present a
+	// "configure the launcher" prompt rather than a generic error message.
+	ErrProfileMissing = "ERR_PROFILE_MISSING"
 )
 
 // PolicyStatus is the static per-session policy verdict recorded in

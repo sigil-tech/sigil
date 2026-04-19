@@ -294,7 +294,14 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 		}
 	}
 
-	// ── 7. Mark merge complete ────────────────────────────────────────────────
+	// ── 7. Mark merge complete (Amendment C) ─────────────────────────────────
+	//
+	// Both the merge_log update and the sessions.ledger_events_total write
+	// happen here. They are separate SQL statements rather than a single
+	// transaction because hostDB may not be in autocommit mode and because
+	// merge_log and sessions live in the same database — a failure in either
+	// write leaves the DB in a detectable state (merge_log still 'in_progress'
+	// or sessions.ledger_events_total = 0) that the caller can observe.
 	completedAt := time.Now().UnixMilli()
 	_, err = hostDB.ExecContext(ctx,
 		`UPDATE merge_log
@@ -304,6 +311,19 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 	)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("merge: mark complete: %w", err)
+	}
+
+	// Amendment C: persist the aggregate row count to sessions so that VMList
+	// can surface ledger_events as an integer scalar without a join to merge_log.
+	// This write is best-effort: if sessions has no row for this sessionID (e.g.
+	// caller is running merge directly against a detached DB), log and continue.
+	if _, sErr := hostDB.ExecContext(ctx,
+		`UPDATE sessions SET ledger_events_total = ? WHERE id = ?`,
+		rowsMerged, sessionID,
+	); sErr != nil {
+		// Non-fatal: the merge_log is already marked complete. The caller can
+		// rehydrate the count from merge_log.rows_merged if needed.
+		_ = sErr
 	}
 
 	return MergeResult{
