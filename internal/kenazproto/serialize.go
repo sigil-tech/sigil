@@ -10,6 +10,10 @@ import (
 	"github.com/sigil-tech/sigil/internal/event"
 )
 
+// vmOriginPrefix is the prefix that identifies VM-origin events.
+// Events with Source = "vm:<session-uuid>" are emitted by the vm-events topic.
+const vmOriginPrefix = "vm:"
+
 // droppedTotal counts events dropped by Serialize (oversize or unknown kind).
 // Read via KenazEventDropped.
 var droppedTotal atomic.Int64
@@ -70,12 +74,22 @@ func Serialize(evt event.Event) (KenazEvent, bool) {
 		origin = "host"
 	}
 
+	// Derive VMID for VM-origin events (spec 028 Phase 6).
+	// Source "vm:<session-uuid>" → Origin "vm:<uuid>", VMID = "<uuid>".
+	// All existing redaction rules apply identically; VM-origin does not weaken
+	// them (spec 028 FR-010e mirror requirement).
+	var vmID string
+	if strings.HasPrefix(origin, vmOriginPrefix) {
+		vmID = strings.TrimPrefix(origin, vmOriginPrefix)
+	}
+
 	ke := KenazEvent{
 		ID:        evt.ID,
 		Origin:    origin,
 		SourceID:  sourceID,
 		Timestamp: evt.Timestamp.UnixMilli(),
 		Kind:      string(evt.Kind),
+		VMID:      vmID,
 	}
 
 	switch evt.Kind {

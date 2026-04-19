@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sigil-tech/sigil/internal/config"
+	"github.com/sigil-tech/sigil/internal/kenazproto"
 	"github.com/sigil-tech/sigil/internal/socket"
 	"github.com/sigil-tech/sigil/internal/store"
 	"github.com/sigil-tech/sigil/internal/vm"
@@ -317,6 +319,163 @@ func TestVMListHandler_Extended(t *testing.T) {
 		_, isString = mem.(string)
 		assert.True(t, isString, "mem must be a string when present")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// vm-events topic tests (spec 028 Phase 6 Tasks 6.3 + 6.4)
+// ---------------------------------------------------------------------------
+
+// TestVMEventsTopicSubscribe verifies that a client can subscribe to the
+// vm-events topic, receives the acknowledgement, and the subscription is live.
+func TestVMEventsTopicSubscribe(t *testing.T) {
+	st := openTestStoreForVM(t)
+	srv, sockPath := startVMTestServer(t, st)
+
+	conn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	const sessionID = "550e8400-e29b-41d4-a716-446655440001"
+	subPayload := map[string]any{"topic": "vm-events", "vm_id": sessionID}
+	raw, err := json.Marshal(subPayload)
+	require.NoError(t, err)
+
+	req := socket.Request{Method: "subscribe", Payload: json.RawMessage(raw)}
+	require.NoError(t, json.NewEncoder(conn).Encode(req))
+
+	scanner := bufio.NewScanner(conn)
+	require.True(t, scanner.Scan(), "expected ack line")
+
+	var ack socket.Response
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &ack))
+	require.True(t, ack.OK, "subscribe ack not OK: %s", ack.Error)
+
+	var ackPayload map[string]any
+	require.NoError(t, json.Unmarshal(ack.Payload, &ackPayload))
+	assert.Equal(t, true, ackPayload["subscribed"], "expected subscribed=true in ack")
+
+	// Send an event through the topic — it must be filtered out because it has
+	// a different vm_id.  Subscriber count must be 1 after subscribe.
+	assert.Equal(t, 1, srv.SubscriberCount("vm-events"), "expected 1 subscriber")
+
+	// Notify an event with the matching vm_id — delivered.
+	ke := kenazproto.KenazEvent{
+		ID:       1,
+		Origin:   "vm:" + sessionID,
+		SourceID: "filesystem",
+		Kind:     "file",
+		VMID:     sessionID,
+	}
+	keRaw, err := json.Marshal(ke)
+	require.NoError(t, err)
+	srv.Notify("vm-events", keRaw)
+
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	require.True(t, scanner.Scan(), "expected push event")
+	var push map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &push))
+	assert.Contains(t, push, "event")
+}
+
+// TestVMEventsTopicSubscribe_FilterMismatch verifies that events with a
+// non-matching vm_id are silently dropped for the subscriber.
+func TestVMEventsTopicSubscribe_FilterMismatch(t *testing.T) {
+	st := openTestStoreForVM(t)
+	srv, sockPath := startVMTestServer(t, st)
+
+	conn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	subPayload := map[string]any{"topic": "vm-events", "vm_id": "session-aaa"}
+	raw, err := json.Marshal(subPayload)
+	require.NoError(t, err)
+
+	req := socket.Request{Method: "subscribe", Payload: json.RawMessage(raw)}
+	require.NoError(t, json.NewEncoder(conn).Encode(req))
+
+	scanner := bufio.NewScanner(conn)
+	require.True(t, scanner.Scan(), "expected ack line")
+
+	var ack socket.Response
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &ack))
+	require.True(t, ack.OK)
+
+	// Send event for a DIFFERENT session — must be filtered out.
+	ke := kenazproto.KenazEvent{
+		ID:       2,
+		VMID:     "session-bbb",
+		Kind:     "file",
+		SourceID: "filesystem",
+	}
+	keRaw, err := json.Marshal(ke)
+	require.NoError(t, err)
+	srv.Notify("vm-events", keRaw)
+
+	// Nothing should arrive within 100ms.
+	conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	got := scanner.Scan()
+	assert.False(t, got, "filtered event must not be delivered to mismatched subscriber")
+}
+
+// TestVMEventsBackpressure verifies the 256-slot buffer and drop counter
+// (spec 028 Phase 6 Task 6.4).
+//
+// The test fills the subscriber's channel directly — using Notify with a
+// blocked push goroutine — by connecting but halting the read side so the
+// OS socket buffer fills, causing the push goroutine to block and the channel
+// to fill with queued events.
+func TestVMEventsBackpressure(t *testing.T) {
+	st := openTestStoreForVM(t)
+	srv, sockPath := startVMTestServer(t, st)
+
+	// Subscribe but do NOT read events after the ack — slow consumer.
+	conn, err := net.Dial("unix", sockPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	subPayload := map[string]any{"topic": "vm-events"}
+	raw, err := json.Marshal(subPayload)
+	require.NoError(t, err)
+
+	req := socket.Request{Method: "subscribe", Payload: json.RawMessage(raw)}
+	require.NoError(t, json.NewEncoder(conn).Encode(req))
+
+	// Read only the ack; stop consuming thereafter.
+	scanner := bufio.NewScanner(conn)
+	require.True(t, scanner.Scan(), "expected ack line")
+
+	var ack socket.Response
+	require.NoError(t, json.Unmarshal(scanner.Bytes(), &ack))
+	require.True(t, ack.OK)
+
+	// Shrink the receive buffer so the OS socket buffer fills quickly,
+	// causing the server's push goroutine to block on write and the channel
+	// to queue until full.
+	if tc, ok := conn.(*net.UnixConn); ok {
+		_ = tc.SetReadBuffer(1) // minimize OS read buffer
+	}
+
+	// Give subscriber goroutine time to register.
+	time.Sleep(20 * time.Millisecond)
+
+	before := socket.TopicDrops("vm-events")
+
+	// Flood with enough events to overflow the 256-slot channel after the
+	// OS socket buffer backs up.  Each payload is ~60 bytes; we send 10,000
+	// to ensure the OS buffer (~64KB) and channel (256 × 60B ≈ 15KB) both fill.
+	for i := 0; i < 10000; i++ {
+		ke := kenazproto.KenazEvent{ID: int64(i), Kind: "file", VMID: ""}
+		keRaw, _ := json.Marshal(ke)
+		srv.Notify("vm-events", keRaw)
+	}
+
+	// Allow non-blocking sends to complete.
+	time.Sleep(50 * time.Millisecond)
+
+	after := socket.TopicDrops("vm-events")
+	assert.Greater(t, after, before,
+		"expected topic_drops_total to increment when vm-events buffer is full")
 }
 
 // TestVMMergeHandler_Stub verifies that VMMerge rejects a session not in

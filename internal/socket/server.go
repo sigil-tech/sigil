@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 // Request is the message a client sends to the daemon.
@@ -46,6 +47,8 @@ var allowedTopics = map[string]bool{
 	"vm-status":           true, // VM lifecycle state changes
 	"observer-event-rate": true, // observer event rate updates
 	"analyzer-cycle":      true, // analyzer cycle completion
+	"observer-events":     true, // kenazproto-serialized host events (spec 027)
+	"vm-events":           true, // kenazproto-serialized VM-origin events (spec 028 Phase 6)
 }
 
 // isAllowedTopic reports whether topic is in the allowlist.
@@ -61,6 +64,54 @@ func RegisterTopic(topic string) {
 	allowedTopics[topic] = true
 }
 
+// TopicConfig holds daemon-registered configuration for a push topic.
+// Registered via RegisterTopicConfig before subscribers connect.
+type TopicConfig struct {
+	// BufSize is the per-subscriber channel buffer depth.
+	// If zero, defaults to 32.
+	BufSize int
+	// SubscriberFactory, if non-nil, is called when a client subscribes to
+	// this topic.  It receives the raw subscribe payload and returns
+	// per-subscriber callbacks:
+	//   filter     — if non-nil, called with each json.RawMessage before
+	//                delivery; return false to skip the event for this sub.
+	//   closeAfter — if non-nil, called after delivery; return true to close
+	//                the subscriber's channel immediately (e.g. vm.session_terminal).
+	SubscriberFactory func(payload json.RawMessage) (
+		filter func(json.RawMessage) bool,
+		closeAfter func(json.RawMessage) bool,
+	)
+}
+
+// subscriber holds a single connection's push channel and its per-instance
+// callbacks.
+type subscriber struct {
+	ch         chan json.RawMessage
+	filter     func(json.RawMessage) bool
+	closeAfter func(json.RawMessage) bool
+}
+
+// dropCounter tracks per-topic drops for the topic_drops_total metric.
+// Incremented when a subscriber's channel is full (backpressure).
+// Read via TopicDrops.
+var dropCounter sync.Map // map[string]*atomic.Int64
+
+// TopicDrops returns the cumulative drop count for topic since process start.
+// Used by the FR-022 topic_drops_total metric.
+func TopicDrops(topic string) int64 {
+	v, ok := dropCounter.Load(topic)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
+}
+
+// addTopicDrop increments the drop counter for topic by 1.
+func addTopicDrop(topic string) {
+	v, _ := dropCounter.LoadOrStore(topic, new(atomic.Int64))
+	v.(*atomic.Int64).Add(1)
+}
+
 // Server listens on a Unix socket and dispatches requests to registered
 // handlers.  Multiple concurrent clients are supported.
 type Server struct {
@@ -71,21 +122,37 @@ type Server struct {
 	mu       sync.Mutex
 	listener net.Listener
 
-	// subMu guards subscribers, which maps topic names to the set of
-	// buffered channels belonging to active subscription connections.
-	subMu       sync.RWMutex
-	subscribers map[string][]chan json.RawMessage
+	// subMu guards topicSubs, which maps topic names to the set of per-
+	// subscriber entries for active subscription connections.
+	subMu     sync.RWMutex
+	topicSubs map[string][]*subscriber
+
+	// topicCfgMu guards topicCfg.
+	topicCfgMu sync.RWMutex
+	topicCfg   map[string]TopicConfig
 }
 
 // New creates a Server.  socketPath is the file-system path for the socket
 // (e.g. "/run/user/1000/sigild.sock").
 func New(socketPath string, log *slog.Logger) *Server {
 	return &Server{
-		socketPath:  socketPath,
-		handlers:    make(map[string]HandlerFunc),
-		log:         log,
-		subscribers: make(map[string][]chan json.RawMessage),
+		socketPath: socketPath,
+		handlers:   make(map[string]HandlerFunc),
+		log:        log,
+		topicSubs:  make(map[string][]*subscriber),
+		topicCfg:   make(map[string]TopicConfig),
 	}
+}
+
+// RegisterTopicConfig registers daemon-side configuration for a push topic.
+// Must be called before any subscribers connect.  Calling RegisterTopic is
+// sufficient for topics that need no special options; RegisterTopicConfig
+// additionally registers the topic in the allowlist.
+func (s *Server) RegisterTopicConfig(topic string, cfg TopicConfig) {
+	RegisterTopic(topic)
+	s.topicCfgMu.Lock()
+	s.topicCfg[topic] = cfg
+	s.topicCfgMu.Unlock()
 }
 
 // Handle registers a handler for the given method name.
@@ -99,25 +166,56 @@ func (s *Server) Handle(method string, fn HandlerFunc) {
 
 // Notify fans out payload to all subscribers of topic.  Each send is
 // non-blocking: if a subscriber's channel is full the message is dropped for
-// that subscriber.  Safe to call from any goroutine.
+// that subscriber (drop counted in topic_drops_total).  The filter predicate
+// is applied before delivery; the closeAfter predicate is applied after;
+// if it returns true the subscriber's channel is closed.  Safe to call from
+// any goroutine.
 func (s *Server) Notify(topic string, payload json.RawMessage) {
 	s.subMu.RLock()
-	chans := s.subscribers[topic]
+	subs := s.topicSubs[topic]
 	s.subMu.RUnlock()
 
-	for _, ch := range chans {
+	for _, sub := range subs {
+		// Per-subscriber filter: skip this event for this subscriber.
+		if sub.filter != nil && !sub.filter(payload) {
+			continue
+		}
+
 		select {
-		case ch <- payload:
+		case sub.ch <- payload:
 		default:
 			// Subscriber is not keeping up; drop the message rather than block.
+			addTopicDrop(topic)
+		}
+
+		// Close-after predicate: if this event signals session terminal, close
+		// the subscriber channel so the push loop exits cleanly.
+		if sub.closeAfter != nil && sub.closeAfter(payload) {
+			s.removeAndClose(topic, sub)
 		}
 	}
+}
+
+// removeAndClose removes sub from topic's subscriber list and closes its
+// channel.  Safe to call from Notify (which holds only RLock).
+func (s *Server) removeAndClose(topic string, target *subscriber) {
+	s.subMu.Lock()
+	subs := s.topicSubs[topic]
+	filtered := subs[:0]
+	for _, sub := range subs {
+		if sub != target {
+			filtered = append(filtered, sub)
+		}
+	}
+	s.topicSubs[topic] = filtered
+	s.subMu.Unlock()
+	close(target.ch)
 }
 
 // SubscriberCount returns the number of active push subscribers for topic.
 func (s *Server) SubscriberCount(topic string) int {
 	s.subMu.RLock()
-	n := len(s.subscribers[topic])
+	n := len(s.topicSubs[topic])
 	s.subMu.RUnlock()
 	return n
 }
@@ -242,7 +340,8 @@ func (s *Server) dispatch(ctx context.Context, enc *json.Encoder, req Request) {
 // handleSubscribe upgrades the connection to a push-only subscription channel.
 // It parses the topic from the first request payload, registers a buffered
 // channel for that topic, sends the acknowledgement, then loops forwarding
-// push events until ctx is cancelled or the channel is closed.
+// push events until ctx is cancelled or the channel is closed (either by the
+// close-after predicate or by the server shutting down).
 func (s *Server) handleSubscribe(ctx context.Context, conn net.Conn, enc *json.Encoder, req Request) {
 	var p struct {
 		Topic string `json:"topic"`
@@ -259,23 +358,39 @@ func (s *Server) handleSubscribe(ctx context.Context, conn net.Conn, enc *json.E
 		return
 	}
 
-	ch := make(chan json.RawMessage, 32)
+	// Determine buffer size and per-subscriber callbacks from the registered
+	// topic configuration (if any).
+	s.topicCfgMu.RLock()
+	cfg := s.topicCfg[p.Topic]
+	s.topicCfgMu.RUnlock()
+
+	bufSize := cfg.BufSize
+	if bufSize <= 0 {
+		bufSize = 32
+	}
+
+	sub := &subscriber{
+		ch: make(chan json.RawMessage, bufSize),
+	}
+	if cfg.SubscriberFactory != nil {
+		sub.filter, sub.closeAfter = cfg.SubscriberFactory(req.Payload)
+	}
 
 	s.subMu.Lock()
-	s.subscribers[p.Topic] = append(s.subscribers[p.Topic], ch)
+	s.topicSubs[p.Topic] = append(s.topicSubs[p.Topic], sub)
 	s.subMu.Unlock()
 
-	// Deregister this channel when the connection exits.
+	// Deregister this subscriber when the connection exits.
 	defer func() {
 		s.subMu.Lock()
-		chans := s.subscribers[p.Topic]
-		filtered := chans[:0]
-		for _, c := range chans {
-			if c != ch {
-				filtered = append(filtered, c)
+		subs := s.topicSubs[p.Topic]
+		filtered := subs[:0]
+		for _, sv := range subs {
+			if sv != sub {
+				filtered = append(filtered, sv)
 			}
 		}
-		s.subscribers[p.Topic] = filtered
+		s.topicSubs[p.Topic] = filtered
 		s.subMu.Unlock()
 	}()
 
@@ -289,8 +404,9 @@ func (s *Server) handleSubscribe(ctx context.Context, conn net.Conn, enc *json.E
 		select {
 		case <-ctx.Done():
 			return
-		case payload, ok := <-ch:
+		case payload, ok := <-sub.ch:
 			if !ok {
+				// Channel closed by close-after predicate: session terminal.
 				return
 			}
 			evt := pushEvent{

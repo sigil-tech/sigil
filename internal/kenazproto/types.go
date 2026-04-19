@@ -10,8 +10,8 @@
 package kenazproto
 
 // KenazEvent is the privacy-filtered wire payload emitted on the
-// "observer-events" push topic.  Field names match the JSON keys consumed by
-// the Kenaz frontend (spec 024 / spec 027).
+// "observer-events" and "vm-events" push topics.  Field names match the JSON
+// keys consumed by the Kenaz frontend (spec 024 / spec 027 / spec 028).
 //
 // All string fields are bounded by the length caps in validateLengths.
 // The zero value is valid and represents a dropped / unmapped event.
@@ -25,6 +25,12 @@ type KenazEvent struct {
 	SubjectDim   string `json:"subject_dim"`
 	SizeChip     string `json:"size_chip"`
 	ContentClass string `json:"content_class"`
+	// VMID carries the session UUID for events whose Origin is "vm:<uuid>".
+	// It is populated by Serialize when evt.Source has the "vm:" prefix (spec
+	// 028 Phase 6).  For host-origin events VMID is always "".  The topic-
+	// server close-after predicate uses VMID to match vm.session_terminal
+	// events to the subscribing client's vm_id.
+	VMID string `json:"vm_id,omitempty"`
 }
 
 // Content-class constants describe the privacy treatment applied to the

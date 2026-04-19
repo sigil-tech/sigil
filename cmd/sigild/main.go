@@ -45,6 +45,7 @@ import (
 	"github.com/sigil-tech/sigil/internal/event"
 	"github.com/sigil-tech/sigil/internal/finetuner"
 	"github.com/sigil-tech/sigil/internal/inference"
+	"github.com/sigil-tech/sigil/internal/kenazproto"
 	"github.com/sigil-tech/sigil/internal/launcherprofile"
 	siglogging "github.com/sigil-tech/sigil/internal/logging"
 	"github.com/sigil-tech/sigil/internal/mcp"
@@ -2394,6 +2395,15 @@ func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
 	})
 }
 
+// vmEventsTopic is the topic name for VM-origin kenazproto-serialized events.
+// Registered with a 256-slot per-subscriber buffer, a vm_id filter, and a
+// close-after predicate for vm.session_terminal (spec 028 Phase 6.2–6.4).
+const vmEventsTopic = "vm-events"
+
+// vmEventsTopicBufSize is the per-subscriber channel buffer for vm-events.
+// 256 slots per spec 028 Phase 6.4.
+const vmEventsTopicBufSize = 256
+
 // registerVMHandlers registers VM lifecycle and merge socket handlers.
 // vmMgr is created from the store's raw *sql.DB so that sessions table
 // operations stay outside the store.ReadWriter abstraction.
@@ -2402,9 +2412,59 @@ func registerSyncHandlers(srv *socket.Server, agent *signsync.Agent) {
 // without a separate RPC. The driver is nil until Phase 4a/4b produces a
 // platform driver; the sampler still wires so that Phase 5b is fully wired
 // independently of Phase 4a/4b.
+//
+// vm-events topic is registered here because the topic filter and close-after
+// predicate are tightly coupled to VM session lifecycle (spec 028 Phase 6.3).
 func registerVMHandlers(srv *socket.Server, st *store.Store, cfg daemonConfig) {
 	sampler := vmstats.NewSampler()
 	vmMgr := vm.NewManager(st.DB(), nil, sampler)
+
+	// Register the vm-events push topic with per-subscriber options:
+	//   - 256-slot buffer (spec 028 Phase 6.4)
+	//   - filter: only deliver events whose VMID matches the subscriber's vm_id
+	//   - closeAfter: close the channel when kind == "vm.session_terminal" for this vm_id
+	srv.RegisterTopicConfig(vmEventsTopic, socket.TopicConfig{
+		BufSize: vmEventsTopicBufSize,
+		SubscriberFactory: func(subPayload json.RawMessage) (
+			filter func(json.RawMessage) bool,
+			closeAfter func(json.RawMessage) bool,
+		) {
+			// Parse the subscribing vm_id from the subscribe payload.
+			var p struct {
+				VMID string `json:"vm_id"`
+			}
+			_ = json.Unmarshal(subPayload, &p)
+			subscribedVMID := p.VMID
+
+			// filter: skip events not matching this subscriber's vm_id.
+			// If no vm_id was specified, deliver all vm-events (broadcast mode).
+			filter = func(raw json.RawMessage) bool {
+				if subscribedVMID == "" {
+					return true
+				}
+				var ke kenazproto.KenazEvent
+				if err := json.Unmarshal(raw, &ke); err != nil {
+					return false
+				}
+				return ke.VMID == subscribedVMID
+			}
+
+			// closeAfter: close the subscriber's channel when the vm.session_terminal
+			// event arrives for the subscribed session.
+			closeAfter = func(raw json.RawMessage) bool {
+				var ke kenazproto.KenazEvent
+				if err := json.Unmarshal(raw, &ke); err != nil {
+					return false
+				}
+				if ke.Kind != "vm.session_terminal" {
+					return false
+				}
+				// Close if VMID matches (or if subscriber is broadcast with no vm_id filter).
+				return subscribedVMID == "" || ke.VMID == subscribedVMID
+			}
+			return filter, closeAfter
+		},
+	})
 
 	srv.Handle("VMStart", func(ctx context.Context, req socket.Request) socket.Response {
 		// StartVMProfile — the Kenaz-side profile request payload.

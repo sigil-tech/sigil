@@ -662,6 +662,98 @@ func TestFileSubjectFromPath(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// VM-origin tests (spec 028 Phase 6 Task 6.1)
+// ---------------------------------------------------------------------------
+
+// TestSerializeVMOrigin verifies that Serialize populates Origin and VMID
+// correctly for events with Source = "vm:<uuid>", and that redaction rules
+// still apply (FR-010e mirror requirement).
+func TestSerializeVMOrigin(t *testing.T) {
+	const sessionUUID = "550e8400-e29b-41d4-a716-446655440000"
+	vmSource := "vm:" + sessionUUID
+
+	tests := []struct {
+		name       string
+		evt        event.Event
+		wantOrigin string
+		wantVMID   string
+	}{
+		{
+			name: "file_event_vm_origin",
+			evt: event.Event{
+				ID:        3001,
+				Kind:      event.KindFile,
+				Source:    vmSource,
+				Timestamp: fixedTime,
+				Payload: map[string]any{
+					"path": "/home/user/project/main.go",
+					"ext":  ".go",
+					"op":   "write",
+				},
+			},
+			wantOrigin: vmSource,
+			wantVMID:   sessionUUID,
+		},
+		{
+			name: "terminal_event_vm_origin_redaction_applies",
+			evt: event.Event{
+				ID:        3002,
+				Kind:      event.KindTerminal,
+				Source:    vmSource,
+				Timestamp: fixedTime,
+				Payload: map[string]any{
+					// argv[0] only rule still applies for VM-origin events.
+					"cmd":       "go test ./...",
+					"exit_code": float64(0),
+				},
+			},
+			wantOrigin: vmSource,
+			wantVMID:   sessionUUID,
+		},
+		{
+			name: "host_event_no_vmid",
+			evt: event.Event{
+				ID:        3003,
+				Kind:      event.KindFile,
+				Source:    "host",
+				Timestamp: fixedTime,
+				Payload: map[string]any{
+					"path": "/home/user/go.mod",
+					"ext":  ".mod",
+				},
+			},
+			wantOrigin: "host",
+			wantVMID:   "",
+		},
+		{
+			name: "empty_source_defaults_to_host_no_vmid",
+			evt: event.Event{
+				ID:        3004,
+				Kind:      event.KindFile,
+				Source:    "",
+				Timestamp: fixedTime,
+				Payload: map[string]any{
+					"path": "/home/user/go.mod",
+					"ext":  ".mod",
+				},
+			},
+			wantOrigin: "host",
+			wantVMID:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ke, ok := kenazproto.Serialize(tt.evt)
+			require.True(t, ok, "expected ok=true for kind %s", tt.evt.Kind)
+			assert.Equal(t, tt.wantOrigin, ke.Origin, "Origin mismatch")
+			assert.Equal(t, tt.wantVMID, ke.VMID, "VMID mismatch")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // BenchmarkSerialize_AllKinds measures Serialize across all 12 mapped kinds.
 // Target: ≤ 500 ns/op, ≤ 1 alloc/op (contract §Benchmarks).
 func BenchmarkSerialize_AllKinds(b *testing.B) {
