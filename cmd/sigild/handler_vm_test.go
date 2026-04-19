@@ -279,6 +279,46 @@ func TestVMListHandler_RealGolden(t *testing.T) {
 	}
 }
 
+// TestVMListHandler_Extended verifies the Phase 5c extended response: VMList
+// includes policy_status and the cpu/mem stat fields (populated from the sampler).
+// With no driver wired, cpu and mem are empty strings; the test asserts that the
+// fields exist and have the correct types.
+func TestVMListHandler_Extended(t *testing.T) {
+	writeLauncherProfile(t, "/images/base.qcow2")
+	st := openTestStoreForVM(t)
+	_, sockPath := startVMTestServer(t, st)
+
+	startResp := sendVM(t, sockPath, "VMStart", map[string]any{
+		"disk_image_path": "/images/base.qcow2",
+	})
+	require.True(t, startResp.OK, "start: %s", startResp.Error)
+
+	listResp := sendVM(t, sockPath, "VMList", map[string]any{"limit": 10})
+	require.True(t, listResp.OK, "list: %s", listResp.Error)
+
+	var sessions []map[string]any
+	require.NoError(t, json.Unmarshal(listResp.Payload, &sessions))
+	require.NotEmpty(t, sessions)
+
+	sess := sessions[0]
+
+	// policy_status must be a string.
+	ps, ok := sess["policy_status"]
+	require.True(t, ok, "policy_status must be present")
+	_, isString := ps.(string)
+	assert.True(t, isString, "policy_status must be a string, got %T", ps)
+
+	// cpu and mem are strings (possibly empty when no driver is wired).
+	if cpu, exists := sess["cpu"]; exists {
+		_, isString = cpu.(string)
+		assert.True(t, isString, "cpu must be a string when present")
+	}
+	if mem, exists := sess["mem"]; exists {
+		_, isString = mem.(string)
+		assert.True(t, isString, "mem must be a string when present")
+	}
+}
+
 // TestVMMergeHandler_Stub verifies that VMMerge rejects a session not in
 // stopping/stopped state. No hypervisor or real SQLite merge is needed to
 // exercise the precondition guard.

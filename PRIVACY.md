@@ -211,6 +211,37 @@ cursor so it only sends new rows, never re-sends old data.
 
 ---
 
+## VM Sandbox data (spec 028)
+
+When a VM Sandbox session is active, sigild collects the following additional
+data:
+
+| Field | Table | What is recorded |
+|-------|-------|-----------------|
+| `sessions.ledger_events_total` | `sessions` | Aggregate count of VM events merged into the training corpus — a scalar integer, never per-event details. |
+| `sessions.policy_status` | `sessions` | Opaque policy verdict (`ok`, `denied`, `not_applicable`) computed at session start time from the configured policy ID and egress tier — no user content. |
+| VM-origin events via `vm-events` push topic | in-memory only | Observer events from inside the VM guest, serialised through the same `serializeKenazEvent` redaction pipeline as host events (spec 027 FR-010e). Window titles are truncated, clipboard content is hashed only. VM-origin events are identified by `"origin":"vm:<session-uuid>"`. |
+
+**`vm-events` topic** (planned Phase 6): a push subscription topic that relays
+VM-interior observer events to connected Kenaz clients. The serializer applies
+the same redaction rules as the host observer event path (spec 027 FR-010e):
+window titles truncated to 64 characters, clipboard content replaced by
+SHA-256 hash, network destinations host-only. No file contents, no command
+arguments, no environment variables leave the VM.
+
+**LauncherProfile**: sigild reads `~/.sigil/launcher/settings.json` (macOS)
+or `$XDG_CONFIG_HOME/sigil-launcher/settings.json` (Linux) at VMStart time to
+resolve hypervisor resource settings (memory, CPU, image path). This file is
+read-only; sigild never writes to it and never transmits its contents over the
+network.
+
+All VM session data lives in the same local SQLite database
+(`~/.local/share/sigild/data.db`) and is subject to the same retention and
+purge policies as all other sigild data. `sigilctl purge` deletes VM session
+rows via CASCADE on the `sessions` table.
+
+---
+
 ## Questions or concerns
 
 Open an issue at <https://github.com/sigil-tech/sigil/issues>.

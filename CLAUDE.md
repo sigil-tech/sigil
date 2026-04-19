@@ -46,11 +46,18 @@ event (leaf — no internal imports)
   ↑
 config (no internal imports)
   ↑
+launcherprofile [spec 028] (leaf — stdlib only; reads LauncherProfile JSON)
+  ↑
 store (imports event)
   ↑
 filter (imports config; shared denylist filtering for merge and corpus)
   ↑
 merge (imports store, config, filter; VM-to-host pipeline)
+  ↑
+vm (imports event; defines Driver + SessionSampler interfaces, policy evaluator)
+  ↑
+vmdriver [spec 028] (imports vm for interface only; platform drivers: linux/darwin/fake)
+vmstats  [spec 028] (imports vm for types only; per-session stat cache + fan-in goroutine)
   ↑
 hostctx, finetuner (siblings; import store/config)
   ↑

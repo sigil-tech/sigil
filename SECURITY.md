@@ -105,6 +105,49 @@ deployed independently and is not part of the sigild daemon.
   stored or logged. Only metadata (model name, status code, latency) is
   recorded for billing purposes.
 
+## VM Sandbox IPC surfaces (spec 028)
+
+### sigild-vz subprocess boundary (macOS — ADR-028a — PENDING Phase 4b)
+
+On macOS, sigild spawns a helper subprocess `sigild-vz` (a Swift binary
+built from `sigil-launcher-macos/Sources/SigilVZ/`) to drive the Apple
+Virtualization framework. Communication happens over stdin/stdout JSON-line
+pipes. The subprocess is not present on Linux.
+
+Security properties:
+- `sigild-vz` handles only VM lifecycle commands (`start`, `stop`, `status`,
+  `subscribe`, `health`). No user event data flows through this pipe.
+- A version handshake at startup validates that the `sigild-vz` protocol
+  version matches sigild's expectation. A mismatch causes sigild to terminate
+  the subprocess and return `ERR_HYPERVISOR_UNAVAILABLE`.
+- The subprocess inherits sigild's user identity (no privilege escalation).
+- Crash isolation: a crash in `sigild-vz` does not crash sigild; the daemon
+  marks the session as failed and continues.
+
+### QEMU / QMP protocol (Linux — ADR-028b)
+
+On Linux, sigild spawns `qemu-system-x86_64` directly and communicates with
+it over a Unix domain socket using the QEMU Machine Protocol (QMP).
+
+Security properties:
+- The QMP socket is created in a temporary directory with permissions `0600`
+  (owner-only). The socket path is unlinked on both clean teardown and
+  SIGKILL paths.
+- QMP commands are limited to lifecycle operations (`system_powerdown`, `quit`,
+  `query-status`, `qom-get`). No arbitrary command injection is possible
+  through sigild's QMP client.
+- QEMU runs as the current user. VM disk images are accessed via ephemeral
+  overlay files (`qemu-img create -b`), so the base image is never modified.
+
+### vm-events push topic (planned Phase 6)
+
+The `vm-events` topic will relay observer events from inside the VM guest to
+connected Kenaz subscribers. All events pass through the `serializeKenazEvent`
+redaction pipeline (spec 027 FR-010e) before being placed on the topic buffer.
+Subscribers see only redacted metadata; no raw file paths or command strings
+from inside the VM are exposed. The topic uses a per-subscriber 256-slot
+buffer with drop-on-full semantics.
+
 ## Design Principles
 
 - All data is local-first. Nothing leaves the machine without explicit opt-in.

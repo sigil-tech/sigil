@@ -2776,7 +2776,15 @@ func registerFinetunerHandlers(srv *socket.Server, ft *finetuner.Finetuner) {
 
 // ProtocolVersion is the socket protocol version. Bump when incompatible
 // changes are made to existing methods. Add new methods without bumping.
-const ProtocolVersion = 2
+//
+// Version history:
+//
+//	1 — initial sigild socket protocol
+//	2 — observer-events topic added (spec 027)
+//	3 — VM Sandbox handlers real-wired + vm-events topic + stat fields in
+//	    VMList response (spec 028 Phase 5a–5c). Partial-feature daemons at
+//	    v2 (observer only) must not serve VM Sandbox requests to Kenaz.
+const ProtocolVersion = 3
 
 // DaemonVersion is the daemon's semantic version.
 const DaemonVersion = "0.5.0"

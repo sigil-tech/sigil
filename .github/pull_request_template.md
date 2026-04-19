@@ -17,3 +17,4 @@
 - [ ] New interfaces added to CLAUDE.md if cross-package
 - [ ] DAG preserved — no import cycles introduced
 - [ ] PRIVACY.md updated if new data is collected or transmitted
+- [ ] If you changed `launcherprofile.Profile`, update `internal/launcherprofile/testdata/launcher_profile_round_trip.json` and re-run `go test ./internal/launcherprofile/...`
