@@ -8,7 +8,7 @@ CMDS    := ./cmd/sigild/ ./cmd/sigilctl/
 PLUGINS := $(wildcard ./plugins/sigil-plugin-*/)
 
 .PHONY: all fmt fmt-check vet lint staticcheck test test-race check build build-app install run \
-        status generate coverage clean sync-assets hooks help
+        status generate coverage clean sync-assets hooks fetch-sigil-os-image help
 
 ## all: default target — build everything.
 all: build
@@ -105,6 +105,22 @@ run: build
 ## status: query the running daemon via sigilctl.
 status: build
 	$(BIN)/sigilctl status
+
+## fetch-sigil-os-image: download + SHA-verify a pinned sigil-os QCOW2 image for integration tests.
+## Set SIGIL_OS_IMAGE_URL to the full URL of the .qcow2 file (a .sha256 sidecar must exist at <URL>.sha256).
+## The image is written to testdata/sigil-os.qcow2; the checksum to testdata/sigil-os.qcow2.checksum.
+## See docs/build.md for the canonical image URL format.
+fetch-sigil-os-image:
+	@if [ -z "$$SIGIL_OS_IMAGE_URL" ]; then \
+	  echo "SIGIL_OS_IMAGE_URL env var required; see docs/build.md for the canonical URL format."; \
+	  echo "Example: SIGIL_OS_IMAGE_URL=https://github.com/sigil-tech/sigil-os/releases/download/v0.3.1/sigil-vm-linux-x86_64.qcow2 make fetch-sigil-os-image"; \
+	  exit 1; \
+	fi
+	@mkdir -p testdata
+	curl -L -o testdata/sigil-os.qcow2.checksum "$$SIGIL_OS_IMAGE_URL.sha256"
+	curl -L -o testdata/sigil-os.qcow2 "$$SIGIL_OS_IMAGE_URL"
+	cd testdata && sha256sum -c sigil-os.qcow2.checksum
+	@echo "sigil-os image verified and saved to testdata/sigil-os.qcow2"
 
 ## clean: remove build artifacts.
 clean:
