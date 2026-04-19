@@ -66,6 +66,10 @@ type SourcesConfig struct {
 	Download     DownloadSourceConfig `toml:"download" json:"download"`
 	Calendar     CalendarSourceConfig `toml:"calendar" json:"calendar"`
 	Browser      BrowserSourceConfig  `toml:"browser" json:"browser"`
+	Files        SourceConfig         `toml:"files" json:"files"`
+	Git          SourceConfig         `toml:"git" json:"git"`
+	Clipboard    SourceConfig         `toml:"clipboard" json:"clipboard"`
+	Process      SourceConfig         `toml:"process" json:"process"`
 }
 
 // SourceConfig is the common config for a polled source.
@@ -168,10 +172,28 @@ type NetworkSourceConfig struct {
 	HashSSID     bool   `toml:"hash_ssid" json:"hash_ssid"`
 }
 
+// IsEnabled returns whether the network source is enabled, using the provided
+// default when the user hasn't explicitly set a value.
+func (s NetworkSourceConfig) IsEnabled(defaultOn bool) bool {
+	if s.Enabled == nil {
+		return defaultOn
+	}
+	return *s.Enabled
+}
+
 // DownloadSourceConfig adds watch directory.
 type DownloadSourceConfig struct {
 	Enabled  *bool  `toml:"enabled" json:"enabled"`
 	WatchDir string `toml:"watch_dir" json:"watch_dir"`
+}
+
+// IsEnabled returns whether the download source is enabled, using the provided
+// default when the user hasn't explicitly set a value.
+func (s DownloadSourceConfig) IsEnabled(defaultOn bool) bool {
+	if s.Enabled == nil {
+		return defaultOn
+	}
+	return *s.Enabled
 }
 
 // CalendarSourceConfig adds calendar filter.
@@ -181,11 +203,29 @@ type CalendarSourceConfig struct {
 	Calendars    []string `toml:"calendars" json:"calendars"`
 }
 
+// IsEnabled returns whether the calendar source is enabled, using the provided
+// default when the user hasn't explicitly set a value.
+func (s CalendarSourceConfig) IsEnabled(defaultOn bool) bool {
+	if s.Enabled == nil {
+		return defaultOn
+	}
+	return *s.Enabled
+}
+
 // BrowserSourceConfig adds domain blocklist and poll interval.
 type BrowserSourceConfig struct {
 	Enabled        *bool    `toml:"enabled" json:"enabled"`
 	PollInterval   string   `toml:"poll_interval" json:"poll_interval"`
 	BlockedDomains []string `toml:"blocked_domains" json:"blocked_domains"`
+}
+
+// IsEnabled returns whether the browser source is enabled, using the provided
+// default when the user hasn't explicitly set a value.
+func (s BrowserSourceConfig) IsEnabled(defaultOn bool) bool {
+	if s.Enabled == nil {
+		return defaultOn
+	}
+	return *s.Enabled
 }
 
 // SyncConfig controls the Sync Agent that streams SQLite changes to the cloud.

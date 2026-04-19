@@ -255,13 +255,20 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	// --- Collector ----------------------------------------------------------
 	terminalSrc := sources.NewTerminalSource()
 
+	srcs := cfg.fileCfg.Sources
 	col := collector.New(db, log)
-	col.Add(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
-	col.Add(&sources.ProcessSource{})
-	col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
+	if srcs.Files.IsEnabled(true) {
+		col.Add(&sources.FileSource{Paths: cfg.watchPaths, IgnorePatterns: cfg.fileCfg.Daemon.IgnorePatterns, MaxWatches: cfg.maxWatches})
+	}
+	if srcs.Process.IsEnabled(true) {
+		col.Add(&sources.ProcessSource{})
+	}
+	if srcs.Git.IsEnabled(true) {
+		col.Add(&sources.GitSource{RepoPaths: cfg.repoPaths})
+	}
 	col.Add(terminalSrc)
 	col.Add(&sources.HyprlandSource{})
-	addPlatformSources(col, log)
+	addPlatformSources(col, log, srcs)
 
 	if err := col.Start(ctx); err != nil {
 		return fmt.Errorf("start collector: %w", err)

@@ -731,3 +731,94 @@ func TestDefaults_CloudSyncAPIURL(t *testing.T) {
 		t.Errorf("CloudSync.APIURL = %q; want %q", cfg.CloudSync.APIURL, DefaultCloudSyncURL)
 	}
 }
+
+// TestConfig_LoadDefaults asserts that the three new SourcesConfig fields
+// default to enabled (nil pointer → IsEnabled(true) returns true).
+func TestConfig_LoadDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		got  func(*Config) bool
+	}{
+		{"Sources.Files default enabled", func(c *Config) bool { return c.Sources.Files.IsEnabled(true) }},
+		{"Sources.Git default enabled", func(c *Config) bool { return c.Sources.Git.IsEnabled(true) }},
+		{"Sources.Clipboard default enabled", func(c *Config) bool { return c.Sources.Clipboard.IsEnabled(true) }},
+		{"Sources.Process default enabled", func(c *Config) bool { return c.Sources.Process.IsEnabled(true) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			if !tt.got(cfg) {
+				t.Errorf("%s: IsEnabled(true) = false; want true", tt.name)
+			}
+		})
+	}
+}
+
+// TestSourcesConfig asserts that explicit false values are respected and
+// explicit true values are respected for the new SourcesConfig fields.
+func TestSourcesConfig(t *testing.T) {
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name    string
+		cfg     SourcesConfig
+		wantOn  []string
+		wantOff []string
+	}{
+		{
+			name:   "all nil → default on",
+			cfg:    SourcesConfig{},
+			wantOn: []string{"files", "git", "clipboard", "process"},
+		},
+		{
+			name: "explicit false disables",
+			cfg: SourcesConfig{
+				Files:     SourceConfig{Enabled: &falseVal},
+				Git:       SourceConfig{Enabled: &falseVal},
+				Clipboard: SourceConfig{Enabled: &falseVal},
+				Process:   SourceConfig{Enabled: &falseVal},
+			},
+			wantOff: []string{"files", "git", "clipboard", "process"},
+		},
+		{
+			name: "explicit true stays on",
+			cfg: SourcesConfig{
+				Files:     SourceConfig{Enabled: &trueVal},
+				Git:       SourceConfig{Enabled: &trueVal},
+				Clipboard: SourceConfig{Enabled: &trueVal},
+				Process:   SourceConfig{Enabled: &trueVal},
+			},
+			wantOn: []string{"files", "git", "clipboard", "process"},
+		},
+	}
+
+	enabled := func(sc SourcesConfig, name string) bool {
+		switch name {
+		case "files":
+			return sc.Files.IsEnabled(true)
+		case "git":
+			return sc.Git.IsEnabled(true)
+		case "clipboard":
+			return sc.Clipboard.IsEnabled(true)
+		case "process":
+			return sc.Process.IsEnabled(true)
+		}
+		return false
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, name := range tt.wantOn {
+				if !enabled(tt.cfg, name) {
+					t.Errorf("%s: IsEnabled(true) = false; want true", name)
+				}
+			}
+			for _, name := range tt.wantOff {
+				if enabled(tt.cfg, name) {
+					t.Errorf("%s: IsEnabled(true) = true; want false", name)
+				}
+			}
+		})
+	}
+}
