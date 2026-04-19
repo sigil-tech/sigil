@@ -1189,6 +1189,7 @@ Commands:
   vm stop [--session ID]        Stop a running VM session
   vm status [--session ID]      Show VM session status
   vm list [--limit N]           List recent VM sessions
+  vm merge --session ID         Trigger merge for a stopped VM session
   merge log [--session ID]      Show merge log for a session
   merge status --session ID     Show merge status for a session
   merge purge --session ID      Purge merge state for a session
@@ -1823,10 +1824,10 @@ func startDirect() error {
 
 // --- VM commands ------------------------------------------------------------
 
-// cmdVM dispatches vm subcommands: start, stop, status, list.
+// cmdVM dispatches vm subcommands: start, stop, status, list, merge.
 func cmdVM(socketPath string, args []string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage: sigilctl vm <start|stop|status|list> [flags]")
+		fmt.Println("Usage: sigilctl vm <start|stop|status|list|merge> [flags]")
 		return nil
 	}
 	switch args[0] {
@@ -1838,8 +1839,10 @@ func cmdVM(socketPath string, args []string) error {
 		return cmdVMStatus(socketPath, args[1:])
 	case "list":
 		return cmdVMList(socketPath, args[1:])
+	case "merge":
+		return cmdVMMerge(socketPath, args[1:])
 	default:
-		return fmt.Errorf("unknown vm command %q — use start, stop, status, or list", args[0])
+		return fmt.Errorf("unknown vm command %q — use start, stop, status, list, or merge", args[0])
 	}
 }
 
@@ -2016,6 +2019,36 @@ func cmdVMList(socketPath string, args []string) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.SessionID, s.State, started, stopped, image)
 	}
 	return w.Flush()
+}
+
+func cmdVMMerge(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("vm merge", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "session ID to merge (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *sessionID == "" {
+		return fmt.Errorf("usage: sigilctl vm merge --session ID")
+	}
+
+	resp, err := call(socketPath, "VMMerge", map[string]any{"session_id": *sessionID})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		Status    string `json:"status"`
+		Rows      int    `json:"rows_merged"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	fmt.Printf("Merge complete: session=%s status=%s rows=%d\n", result.SessionID, result.Status, result.Rows)
+	return nil
 }
 
 // --- Merge commands ---------------------------------------------------------

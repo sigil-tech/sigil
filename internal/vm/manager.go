@@ -22,6 +22,15 @@ func NewManager(db *sql.DB) *Manager {
 	return &Manager{db: db}
 }
 
+// NewManagerWithoutDriver is an alias for NewManager. It exists to provide a
+// stable call site for Phase 0 handlers while Phase 3 will introduce a
+// two-argument NewManager(db, driver) form. Callers that should NOT have a
+// driver (e.g. stub handlers) call this; Phase 3 migration replaces each call
+// site in one commit.
+func NewManagerWithoutDriver(db *sql.DB) *Manager {
+	return NewManager(db)
+}
+
 // Start creates a new VM session. Returns ErrSessionActive if a session is
 // already in an active state (booting, ready, connecting, stopping).
 func (m *Manager) Start(ctx context.Context, req StartRequest) (*Session, error) {
