@@ -36,3 +36,6 @@ packages:
       SessionSampler:
         config:
           dir: "internal/vm/mocks"
+      LedgerEmitter:
+        config:
+          dir: "internal/vm/mocks"
