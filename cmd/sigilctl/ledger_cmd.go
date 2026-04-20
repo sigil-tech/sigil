@@ -256,9 +256,14 @@ func cmdLedgerVerify(socketPath string, args []string) error {
 	return nil
 }
 
-// cmdLedgerKey implements `sigilctl ledger key [--format json|table]`.
-// Prints the active + retired signing-key registry records.
+// cmdLedgerKey dispatches `sigilctl ledger key [rotate]` variants.
+// `key` alone prints the registry; `key rotate` invokes the Phase 9
+// operator flow via the ledger-key-rotate socket method.
 func cmdLedgerKey(socketPath string, args []string) error {
+	if len(args) > 0 && args[0] == "rotate" {
+		return cmdLedgerKeyRotate(socketPath, args[1:])
+	}
+
 	fs := flag.NewFlagSet("ledger key", flag.ContinueOnError)
 	format := fs.String("format", "table", "output format: json or table (table default for ergonomics)")
 	if err := fs.Parse(args); err != nil {
@@ -298,6 +303,60 @@ func cmdLedgerKey(socketPath string, args []string) error {
 	default:
 		return fmt.Errorf("unknown --format %q — use json or table", *format)
 	}
+	return nil
+}
+
+// cmdLedgerKeyRotate implements `sigilctl ledger key rotate
+// [--reason <text>] [--yes]`. Interactive confirmation prompt
+// defaults to N; --yes skips. On success, prints the new
+// fingerprint + rotation entry id so the operator can verify the
+// sentinel landed.
+func cmdLedgerKeyRotate(socketPath string, args []string) error {
+	fs := flag.NewFlagSet("ledger key rotate", flag.ContinueOnError)
+	reason := fs.String("reason", "operator-initiated rotation", "human-readable rotation reason")
+	yes := fs.Bool("yes", false, "skip the interactive confirmation prompt")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if !*yes {
+		fmt.Println("This will rotate your ledger signing key. The old key is retained in the")
+		fmt.Println("registry for pre-rotation verification; new emissions will be signed by")
+		fmt.Println("a freshly generated key.")
+		fmt.Print("Proceed? [y/N] ")
+		var answer string
+		_, _ = fmt.Fscan(os.Stdin, &answer)
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+			// proceed
+		default:
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	resp, err := call(socketPath, "ledger-key-rotate", map[string]any{"reason": *reason})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon error: %s", resp.Error)
+	}
+
+	var result struct {
+		OldFingerprint  string `json:"OldFingerprint"`
+		NewFingerprint  string `json:"NewFingerprint"`
+		RotationEntryID int64  `json:"RotationEntryID"`
+		Reason          string `json:"Reason"`
+	}
+	if err := json.Unmarshal(resp.Payload, &result); err != nil {
+		return fmt.Errorf("decode ledger-key-rotate response: %w", err)
+	}
+
+	fmt.Printf("Rotation complete:\n")
+	fmt.Printf("  old fingerprint:  %s\n", result.OldFingerprint)
+	fmt.Printf("  new fingerprint:  %s\n", result.NewFingerprint)
+	fmt.Printf("  sentinel entry:   %d\n", result.RotationEntryID)
 	return nil
 }
 

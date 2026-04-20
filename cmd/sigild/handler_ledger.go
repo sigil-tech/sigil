@@ -28,6 +28,39 @@ func registerLedgerHandlers(srv *socket.Server, reader ledger.Reader, verifier l
 	srv.Handle("ledger-key", handleLedgerKey(registry))
 }
 
+// registerLedgerRotateHandler wires ledger-key-rotate to a real
+// Rotator. Kept separate from registerLedgerHandlers because the
+// Rotator depends on the Emitter + KeyStorage (both already wired in
+// the daemon startup bundle), so the tests in
+// handler_ledger_test.go can exercise the read-side handlers without
+// constructing a full Rotator.
+func registerLedgerRotateHandler(srv *socket.Server, rotator ledger.Rotator) {
+	srv.Handle("ledger-key-rotate", handleLedgerKeyRotate(rotator))
+}
+
+type ledgerKeyRotateRequest struct {
+	Reason string `json:"reason"`
+}
+
+func handleLedgerKeyRotate(rotator ledger.Rotator) socket.HandlerFunc {
+	return func(ctx context.Context, req socket.Request) socket.Response {
+		var p ledgerKeyRotateRequest
+		if req.Payload != nil {
+			if err := json.Unmarshal(req.Payload, &p); err != nil {
+				return socket.Response{Error: fmt.Sprintf("ledger-key-rotate: invalid payload: %v", err)}
+			}
+		}
+		if p.Reason == "" {
+			p.Reason = "operator-initiated rotation"
+		}
+		result, err := rotator.Rotate(ctx, p.Reason)
+		if err != nil {
+			return socket.Response{Error: fmt.Sprintf("ledger-key-rotate: %v", err)}
+		}
+		return socket.Response{OK: true, Payload: socket.MarshalPayload(result)}
+	}
+}
+
 // ledgerListRequest matches the spec 029 wire contract for ledger-list.
 // BeforeID is the paginate-before cursor (exclusive upper bound);
 // AfterID is reserved for a future spec (see contracts/ledger-wire.md

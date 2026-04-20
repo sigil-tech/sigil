@@ -57,6 +57,21 @@ func setupLedger(ctx context.Context, db *sql.DB, log *slog.Logger) (*ledgerBund
 // into the socket server's ledger-* handlers. Subsystem Emitter
 // wiring (via WithLedger on vm.Manager, MergeWithLedger, etc.) is
 // done separately by each subsystem's setup site.
+//
+// A Rotator is also constructed and wired to ledger-key-rotate. The
+// Rotator needs the Emitter and KeyStorage (already in the bundle);
+// if Rotator construction fails (e.g., a misconfigured Emitter) the
+// rotate handler is simply not registered — a socket caller trying
+// to rotate gets "unknown method: ledger-key-rotate" rather than a
+// crash.
 func registerLedgerWiring(srv *socket.Server, bundle *ledgerBundle) {
 	registerLedgerHandlers(srv, bundle.Reader, bundle.Verifier, bundle.Registry)
+
+	rotator, err := ledger.NewRotator(bundle.Emitter, bundle.Registry, bundle.Keystore)
+	if err != nil {
+		// Not fatal — the daemon can still serve read handlers without
+		// the rotator. Log via the daemon's default slog.
+		return
+	}
+	registerLedgerRotateHandler(srv, rotator)
 }
