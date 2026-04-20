@@ -66,13 +66,15 @@ func assertMarshalledKeys(t *testing.T, v any, want []string) {
 			t.Errorf("missing field %q in JSON output (raw=%s)", k, raw)
 		}
 	}
-	// Also make sure no field contains a denylist substring that
-	// slipped past the reflect test — JSON tag vs struct-field name
-	// drift could hide a problem otherwise.
-	for k := range strings.SplitSeq(string(raw), ",") {
+	// Defense-in-depth: scan the TOP-LEVEL JSON keys against the
+	// denylist to catch a struct-tag drift that fooled the reflect-
+	// based TestPayloadAllowlist. We only check gotSet (the keys), not
+	// the full body — map values and nested arrays are data, not
+	// field names.
+	for k := range gotSet {
 		for _, bad := range denylist {
 			if strings.Contains(strings.ToLower(k), bad) {
-				t.Errorf("denylisted substring %q found in JSON output: %s", bad, k)
+				t.Errorf("denylisted substring %q found in JSON key %q", bad, k)
 			}
 		}
 	}

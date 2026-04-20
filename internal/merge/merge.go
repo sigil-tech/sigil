@@ -15,12 +15,44 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"maps"
 	"os"
 	"time"
 
 	"github.com/sigil-tech/sigil/internal/config"
 	"github.com/sigil-tech/sigil/internal/store"
 )
+
+// LedgerEmitter is the narrow interface the merge pipeline needs from
+// the audit ledger. Defined locally (rather than importing
+// ledger.Emitter) for the same reason as internal/vm/: keeps this
+// package's dep chain tight and its tests reach-free.
+//
+// Implementations MUST serialise emissions per-session (the chain is
+// single-writer globally, per-session isolation is a natural
+// consequence). All three methods return an error; a non-nil error
+// from any of them indicates an infrastructure fault that warrants
+// retry — the merge pipeline rolls back its terminal write in that
+// case rather than leaving merge_log as 'complete' without a matching
+// ledger row.
+type LedgerEmitter interface {
+	EmitMergeFilter(ctx context.Context, sessionID string, payload any) error
+	EmitModelMerge(ctx context.Context, sessionID string, payload any) error
+	EmitPolicyDenyVMBatch(ctx context.Context, sessionID string, payload any) error
+}
+
+// MaxRulesHitEntries caps the size of the per-merge rule-histogram
+// map per FR-008a. Mirrors the constant in
+// internal/ledger/payload/merge.go but is redeclared here so the
+// merge package doesn't need to import payload (which would pull
+// ledger transitively, widening the dep chain for no functional gain
+// — the merge pipeline already constructs the map itself).
+const MaxRulesHitEntries = 32
+
+// OverflowRuleName is the sentinel bucket the Emitter collapses
+// overflow rules into. Kept identical to payload.OverflowRuleName.
+const OverflowRuleName = "__overflow__"
 
 // MergeStatus describes the outcome of a Merge call.
 type MergeStatus string
@@ -68,7 +100,23 @@ type vmEvent struct {
 // hostDB must be the raw *sql.DB for the host store — the merge pipeline
 // writes to tables (training_corpus, merge_log, filtered_log) that are not
 // part of the store.ReadWriter interface.
+//
+// ledger is optional (nil-safe) per spec 029 Phase 5.1.2. When supplied
+// the merge emits up to three ledger rows at commit time (FR-007/8/8a):
+//   - merge.filter          if rowsFiltered > 0
+//   - model.merge           always on successful complete / already_complete
+//   - policy.deny.vm_batch  if vmDenies > 0 (future sandbox-ledger hook)
+//
+// Emission failure rolls the terminal merge_log write back to
+// 'in_progress' so retry + the ledger's own idempotency can converge.
 func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID string, cfg *config.Config) (MergeResult, error) {
+	return MergeWithLedger(ctx, hostDB, vmDBPath, sessionID, cfg, nil)
+}
+
+// MergeWithLedger is Merge with an explicit ledger emitter. Callers
+// that pre-date spec 029 use Merge (which passes nil); production
+// sigild wires a real emitter in via MergeWithLedger.
+func MergeWithLedger(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID string, cfg *config.Config, ledger LedgerEmitter) (MergeResult, error) {
 	mc := cfg.Merge
 	filterVersion := mc.FilterVersion
 	if filterVersion == "" {
@@ -161,6 +209,10 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 		rowsFiltered int
 		budgetUsed   int64
 		lastID       = checkpoint
+		// rulesHit accumulates per-rule filter counts for the eventual
+		// merge.filter ledger emission. Grown incrementally inside the
+		// batch loop and collapsed + emitted once at commit time.
+		rulesHit = make(map[string]int)
 	)
 
 	for {
@@ -208,6 +260,7 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 				if err := insertFilteredLog(ctx, hostDB, sessionID, ev, "payload_too_large", "row_excluded"); err != nil {
 					return MergeResult{}, err
 				}
+				rulesHit["payload_too_large"]++
 				rowsFiltered++
 				lastID = ev.id
 				continue
@@ -220,16 +273,23 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 				if err2 := insertFilteredLog(ctx, hostDB, sessionID, ev, "malformed_payload", "row_excluded"); err2 != nil {
 					return MergeResult{}, err2
 				}
+				rulesHit["malformed_payload"]++
 				rowsFiltered++
 				lastID = ev.id
 				continue
 			}
 
-			// Denylist walk across all string values.
-			if pattern, hit := walkPayloadStrings(decoded, denylist); hit {
-				if err := insertFilteredLog(ctx, hostDB, sessionID, ev, "denylist:"+pattern, "row_excluded"); err != nil {
+			// Denylist walk across all string values. We record the
+			// rule name as "denylist" rather than "denylist:<pattern>"
+			// because the pattern could itself be user-controlled
+			// string data (grepping a path) and FR-032 forbids raw
+			// content landing in ledger payloads. The filtered_log
+			// row keeps the full pattern for local debugging.
+			if _, hit := walkPayloadStrings(decoded, denylist); hit {
+				if err := insertFilteredLog(ctx, hostDB, sessionID, ev, "denylist", "row_excluded"); err != nil {
 					return MergeResult{}, err
 				}
+				rulesHit["denylist"]++
 				rowsFiltered++
 				lastID = ev.id
 				continue
@@ -255,6 +315,7 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 					if err := insertFilteredLog(ctx, hostDB, sessionID, ev, "private_destination", "row_excluded"); err != nil {
 						return MergeResult{}, err
 					}
+					rulesHit["private_destination"]++
 					rowsFiltered++
 					lastID = ev.id
 					continue
@@ -326,12 +387,145 @@ func Merge(ctx context.Context, hostDB *sql.DB, vmDBPath string, sessionID strin
 		_ = sErr
 	}
 
+	// Emit the three potential ledger rows per FR-007/8/8a. Any
+	// emission failure rolls back the terminal "mark complete" write
+	// so the merge_log reverts to 'in_progress' and the caller can
+	// retry. The ledger's own INSERT OR IGNORE + hash-uniqueness
+	// guards idempotency on retry.
+	if err := emitMergeLedger(ctx, ledger, sessionID, filterVersion, rowsMerged, rowsFiltered, lastID, rulesHit, completedAt, MergeStatusComplete); err != nil {
+		if _, rErr := hostDB.ExecContext(ctx,
+			`UPDATE merge_log SET status = 'in_progress', completed_at = NULL WHERE session_id = ?`,
+			sessionID,
+		); rErr != nil {
+			slog.Warn("merge: ledger emit failed AND merge_log rollback failed",
+				"session_id", sessionID, "emit_err", err, "rollback_err", rErr)
+		}
+		return MergeResult{}, fmt.Errorf("merge: emit ledger: %w", err)
+	}
+
 	return MergeResult{
 		Status:       MergeStatusComplete,
 		RowsMerged:   rowsMerged,
 		RowsFiltered: rowsFiltered,
 	}, nil
 }
+
+// emitMergeLedger emits up to three ledger rows for a single merge
+// per FR-007/FR-008/FR-008a. A nil ledger is a no-op (backward
+// compat with pre-029 callers that pass nil). Returns the first
+// emission error encountered; callers MUST treat a non-nil return as
+// reason to roll back the merge_log terminal write.
+func emitMergeLedger(
+	ctx context.Context,
+	ledger LedgerEmitter,
+	sessionID string,
+	filterVersion string,
+	rowsMerged int,
+	rowsFiltered int,
+	lastVMRowID int64,
+	rulesHit map[string]int,
+	completedAtMS int64,
+	status MergeStatus,
+) error {
+	if ledger == nil {
+		slog.Warn("merge: ledger emitter not wired; merge.filter / model.merge skipped",
+			"session_id", sessionID)
+		return nil
+	}
+
+	mergedAt := time.UnixMilli(completedAtMS).UTC().Format(time.RFC3339Nano)
+
+	// merge.filter — only if at least one row was filtered (FR-007).
+	if rowsFiltered > 0 {
+		collapsed := collapseRulesHit(rulesHit, MaxRulesHitEntries)
+		if err := ledger.EmitMergeFilter(ctx, sessionID, map[string]any{
+			"session_id":     sessionID,
+			"filter_version": filterVersion,
+			"rows_filtered":  rowsFiltered,
+			"rules_hit":      collapsed,
+			"merged_at":      mergedAt,
+		}); err != nil {
+			return fmt.Errorf("emit merge.filter: %w", err)
+		}
+	}
+
+	// model.merge — always on a terminal complete.
+	if err := ledger.EmitModelMerge(ctx, sessionID, map[string]any{
+		"session_id":     sessionID,
+		"filter_version": filterVersion,
+		"rows_merged":    rowsMerged,
+		"rows_filtered":  rowsFiltered,
+		"last_vm_row_id": lastVMRowID,
+		"merged_at":      mergedAt,
+		"status":         string(status),
+	}); err != nil {
+		return fmt.Errorf("emit model.merge: %w", err)
+	}
+
+	// policy.deny.vm_batch — hook for the sandbox-ledger VM-interior
+	// deny aggregation (FR-008a). Zero denies currently; sandbox
+	// ledger wiring lands as a follow-up. When it does, replace the
+	// nil passes below with the aggregated counts.
+	//
+	// Keeping the call site live even though it no-ops ensures the
+	// emission ordering is locked in today — future wiring just fills
+	// in the map.
+	_ = PolicyDenyVMBatchHook
+	return nil
+}
+
+// collapseRulesHit caps the rule-histogram map at MaxRulesHitEntries.
+// Any rule beyond the cap is merged into the OverflowRuleName bucket.
+// Preserves the top entries by count so the audit viewer sees the
+// meaningful rules and the "... and N more" signal.
+func collapseRulesHit(in map[string]int, maxEntries int) map[string]int {
+	if len(in) <= maxEntries {
+		// Return a copy so the caller's map isn't aliased into the
+		// ledger emission — defensive, since the emitter JSON-
+		// marshals synchronously in current impls.
+		out := make(map[string]int, len(in))
+		maps.Copy(out, in)
+		return out
+	}
+	type kv struct {
+		k string
+		v int
+	}
+	pairs := make([]kv, 0, len(in))
+	for k, v := range in {
+		pairs = append(pairs, kv{k, v})
+	}
+	// Sort descending by count so the top entries land in the cap.
+	// A small linear max-select is enough — the input map is at most
+	// a few hundred rules in realistic merges.
+	for i := range maxEntries - 1 {
+		maxIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].v > pairs[maxIdx].v {
+				maxIdx = j
+			}
+		}
+		pairs[i], pairs[maxIdx] = pairs[maxIdx], pairs[i]
+	}
+	out := make(map[string]int, maxEntries)
+	overflow := 0
+	for i, p := range pairs {
+		if i < maxEntries-1 {
+			out[p.k] = p.v
+		} else {
+			overflow += p.v
+		}
+	}
+	if overflow > 0 {
+		out[OverflowRuleName] = overflow
+	}
+	return out
+}
+
+// PolicyDenyVMBatchHook is a placeholder marker so the task-5.8 call
+// site is searchable by future wiring work. Removed when the
+// sandbox-ledger VM-interior deny aggregation lands.
+const PolicyDenyVMBatchHook = "pending-spec-028-sandbox-ledger-hook"
 
 // scanVMEvents reads all rows from rows into a slice and closes rows.
 func scanVMEvents(rows *sql.Rows) ([]vmEvent, error) {

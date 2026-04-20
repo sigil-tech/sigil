@@ -112,5 +112,9 @@ func testAllPayloadStructs() []any {
 		// vm.go
 		VMSpawnPayload{},
 		VMTeardownPayload{},
+		// merge.go
+		MergeFilterPayload{},
+		ModelMergePayload{},
+		PolicyDenyVMBatchPayload{},
 	}
 }
