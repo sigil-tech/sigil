@@ -1,33 +1,42 @@
 # launcher_profile_round_trip.json — Fixture Source
 
-## Status: SYNTHETIC (Phase 0b CI gate pending)
+## Status: SYNTHETIC (CI job scaffolded, production pin pending)
 
-`launcher_profile_round_trip.json` is a **manually synthesised** fixture. It was
-created by reading the Swift source of truth at
+`launcher_profile_round_trip.json` is currently a **manually synthesised** fixture.
+It was created by reading the Swift source of truth at
 `sigil-launcher-macos/SigilLauncher/Models/LauncherProfile.swift` and populating
 every field with a deterministic, non-empty value.
 
-## Why synthetic?
+## Phase 0b status
 
 Phase 0b of spec 028 (`sigil-launcher-macos` CI produces a LauncherProfile artefact
-from a live Swift build) is **BLOCKED** on external Swift CI work in the
-`sigil-launcher-macos` repository. Until Phase 0b ships:
+from a live Swift build) is **scaffolded but not yet running in production**:
 
-- This fixture is the authoritative test input for `TestRoundTrip`.
-- The fixture is maintained by hand whenever `LauncherProfile.swift` changes.
+- The CI workflow lives at
+  `sigil-launcher-macos/.github/workflows/launcher-profile-artefact.yml`.
+- The Swift test helper that produces the artefact lives at
+  `sigil-launcher-macos/Tests/LauncherProfileArtefactTests.swift`.
+- Until a workflow run successfully publishes the artefact and the URL is
+  pinned below, this synthetic fixture remains authoritative. Keep it
+  hand-maintained whenever `LauncherProfile.swift` gains or loses a field.
 
-## Replacement path (Phase 0b)
+## Replacement path (final switchover)
 
-When Phase 0b completes:
+When a `sigil-launcher-macos` workflow has produced and published the real
+artefact:
 
-1. The `sigil-launcher-macos` CI job will produce `launcher_profile_round_trip.json`
-   by instantiating a `LauncherProfile` with every optional field populated, encoding
-   it with sorted keys, and uploading the result as a CI artefact.
-2. This file will be replaced by the CI-produced artefact, pinned to a specific
-   `sigil-launcher-macos` commit SHA via a `//go:generate` comment in `testdata.go`.
-3. The `go:generate` comment will use `gh release download` or equivalent to fetch
-   the pinned artefact and overwrite this file.
-4. Delete this notice once the CI gate is wired and the synthetic file is gone.
+1. Record the commit SHA + download URL below.
+2. Update `testdata.go`'s `go:generate` comment to fetch from that URL and
+   verify a SHA-256 checksum sidecar.
+3. Regenerate by running `go generate ./internal/launcherprofile/`; commit
+   the updated bytes.
+4. Delete this entire notice — the fixture is no longer synthetic.
+
+### Artefact pin (fill in when available)
+
+- `sigil-launcher-macos` commit SHA: _pending_
+- Artefact URL: _pending_
+- SHA-256 of pinned artefact: _pending_
 
 ## Field ordering
 

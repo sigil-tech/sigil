@@ -8,7 +8,7 @@ CMDS    := ./cmd/sigild/ ./cmd/sigilctl/
 PLUGINS := $(wildcard ./plugins/sigil-plugin-*/)
 
 .PHONY: all fmt fmt-check vet lint staticcheck test test-race check build build-app install run \
-        status generate coverage clean sync-assets hooks fetch-sigil-os-image help
+        status generate coverage clean sync-assets hooks fetch-sigil-os-image fetch-vz-binary help
 
 ## all: default target — build everything.
 all: build
@@ -121,6 +121,24 @@ fetch-sigil-os-image:
 	curl -L -o testdata/sigil-os.qcow2 "$$SIGIL_OS_IMAGE_URL"
 	cd testdata && sha256sum -c sigil-os.qcow2.checksum
 	@echo "sigil-os image verified and saved to testdata/sigil-os.qcow2"
+
+## fetch-vz-binary: download + SHA-verify a pinned sigild-vz macOS helper binary next to sigild.
+## Set SIGILD_VZ_URL to the full URL of the sigild-vz binary (a .sha256 sidecar must exist at <URL>.sha256).
+## The binary is placed at bin/sigild-vz so vmdriver_darwin.go's sibling-of-os.Args[0] discovery resolves
+## it for local dev runs. macOS CI runs this target before `go test -tags=darwin ./internal/vmdriver/...`.
+## Published by sigil-launcher-macos CI (release.yml) on every release tag; see ADR-028a §7.
+fetch-vz-binary:
+	@if [ -z "$$SIGILD_VZ_URL" ]; then \
+	  echo "SIGILD_VZ_URL env var required; points to a sigild-vz release artefact in sigil-launcher-macos."; \
+	  echo "Example: SIGILD_VZ_URL=https://github.com/sigil-tech/sigil-launcher-macos/releases/download/v0.2.0/sigild-vz make fetch-vz-binary"; \
+	  exit 1; \
+	fi
+	@mkdir -p $(BIN)
+	curl -L -o $(BIN)/sigild-vz.checksum "$$SIGILD_VZ_URL.sha256"
+	curl -L -o $(BIN)/sigild-vz "$$SIGILD_VZ_URL"
+	chmod +x $(BIN)/sigild-vz
+	cd $(BIN) && sha256sum -c sigild-vz.checksum
+	@echo "sigild-vz verified and saved to $(BIN)/sigild-vz"
 
 ## clean: remove build artifacts.
 clean:
