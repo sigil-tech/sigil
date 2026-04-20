@@ -141,26 +141,45 @@ fetch-vz-binary:
 	cd $(BIN) && sha256sum -c sigild-vz.checksum
 	@echo "sigild-vz verified and saved to $(BIN)/sigild-vz"
 
-## check-ledger-append-only: grep for any UPDATE / DELETE / DROP against `ledger` or `ledger_keys`
-## tables anywhere outside `internal/ledger/purge.go`. Enforces spec 029 FR-002 / FR-013b — the
-## ledger is append-only by design, violations are a build-blocking defect.
-## Allowlist: internal/ledger/purge.go (the single authorised purge helper), *.md,
-## *_test.go (tests are allowed to poke raw SQL for tamper fixtures).
+## check-ledger-append-only: enforce spec 029 FR-002 / FR-013b — the ledger is append-only.
+## Three independent grep rules cover the distinct invariants:
+##   1. UPDATE ledger (NOT ledger_keys) — never allowed; only purge.go can touch it, via DROP.
+##   2. UPDATE ledger_keys — allowed only inside the registry's single-UPDATE-path site
+##      (internal/ledger/keyregistry.go). Every other site is a violation.
+##   3. DELETE FROM / DROP TABLE against either table — allowed only in purge.go.
+## Tests (*_test.go) and docs (*.md) and the Makefile itself are exempt from all three
+## because tests poke raw SQL for tamper fixtures and docs quote SQL verbatim.
 check-ledger-append-only:
 	@set -e; \
-	pattern='(UPDATE[[:space:]]+ledger(_keys)?\b|DELETE[[:space:]]+FROM[[:space:]]+ledger(_keys)?\b|DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?ledger(_keys)?\b)'; \
-	matches=$$(git grep -n -i -E "$$pattern" -- \
+	common_excludes=':(exclude)**/*.md :(exclude)Makefile :(exclude)**/*_test.go'; \
+	fail=0; \
+	update_ledger=$$(git grep -n -i -E 'UPDATE[[:space:]]+ledger\b([^_]|$$)' -- \
 	  ':(exclude)internal/ledger/purge.go' \
-	  ':(exclude)**/*.md' \
-	  ':(exclude)Makefile' \
-	  ':(exclude)**/*_test.go' \
+	  ':(exclude)**/*.md' ':(exclude)Makefile' ':(exclude)**/*_test.go' \
 	  2>/dev/null || true); \
-	if [ -n "$$matches" ]; then \
-	  echo "check-ledger-append-only: FAIL — disallowed ledger mutation outside internal/ledger/purge.go:"; \
-	  echo "$$matches"; \
-	  exit 1; \
+	if [ -n "$$update_ledger" ]; then \
+	  echo "check-ledger-append-only: FAIL — UPDATE ledger outside purge.go is forbidden:"; \
+	  echo "$$update_ledger"; fail=1; \
 	fi; \
-	echo "check-ledger-append-only: OK (ledger / ledger_keys tables only touched via Append + purge helper)"
+	update_keys=$$(git grep -n -i -E 'UPDATE[[:space:]]+ledger_keys\b' -- \
+	  ':(exclude)internal/ledger/purge.go' \
+	  ':(exclude)internal/ledger/keyregistry.go' \
+	  ':(exclude)**/*.md' ':(exclude)Makefile' ':(exclude)**/*_test.go' \
+	  2>/dev/null || true); \
+	if [ -n "$$update_keys" ]; then \
+	  echo "check-ledger-append-only: FAIL — UPDATE ledger_keys outside the single-update-path site (keyregistry.go) or purge.go is forbidden:"; \
+	  echo "$$update_keys"; fail=1; \
+	fi; \
+	destructive=$$(git grep -n -i -E '(DELETE[[:space:]]+FROM[[:space:]]+ledger(_keys)?\b|DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?ledger(_keys)?\b)' -- \
+	  ':(exclude)internal/ledger/purge.go' \
+	  ':(exclude)**/*.md' ':(exclude)Makefile' ':(exclude)**/*_test.go' \
+	  2>/dev/null || true); \
+	if [ -n "$$destructive" ]; then \
+	  echo "check-ledger-append-only: FAIL — DELETE/DROP against ledger or ledger_keys outside purge.go is forbidden:"; \
+	  echo "$$destructive"; fail=1; \
+	fi; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "check-ledger-append-only: OK (ledger / ledger_keys append-only outside keyregistry + purge helpers)"
 
 ## clean: remove build artifacts.
 clean:
