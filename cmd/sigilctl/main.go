@@ -128,6 +128,8 @@ func run() error {
 		return cmdCorpus(*socketPath, args)
 	case "audit":
 		return cmdAudit(*socketPath, args)
+	case "ledger":
+		return cmdLedger(*socketPath, args)
 	default:
 		return fmt.Errorf("unknown command %q — run sigilctl -help", cmd)
 	}
