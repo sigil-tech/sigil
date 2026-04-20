@@ -9,7 +9,7 @@ PLUGINS := $(wildcard ./plugins/sigil-plugin-*/)
 
 .PHONY: all fmt fmt-check vet lint staticcheck test test-race check build build-app install run \
         status generate coverage clean sync-assets hooks fetch-sigil-os-image fetch-vz-binary \
-        check-ledger-append-only check-policy-centralisation check-ledger-privacy help
+        check-ledger-append-only check-policy-centralisation check-ledger-privacy bench-sc help
 
 ## all: default target — build everything.
 all: build
@@ -181,6 +181,18 @@ check-ledger-append-only:
 	fi; \
 	if [ $$fail -ne 0 ]; then exit 1; fi; \
 	echo "check-ledger-append-only: OK (ledger / ledger_keys append-only outside keyregistry + purge helpers)"
+
+## bench-sc: run the spec 029 Success-Criteria benchmarks with regression
+## gates. SC-003 / SC-006 budgets:
+##   - ListEntries 100K: < 50ms per op
+##   - Verify 100K   : < 15s per op (hardware-dependent; CI gate is 15s)
+## On dev hardware these pass by a wide margin; on slower CI the Verify
+## budget is the tight one — the bench prints a failure summary rather
+## than just the raw numbers so CI reporters can flag regressions.
+bench-sc:
+	@set -e; \
+	echo "Running spec 029 SC benchmarks (may take ~1m)..."; \
+	$(GO) test -run=^$$ -bench='BenchmarkSC003_List100K|BenchmarkSC006_Verify100K' -benchtime=3x -timeout=10m ./internal/ledger/
 
 ## check-policy-centralisation: enforce spec 029 FR-006. Every deny decision MUST flow
 ## through internal/policy.Denier — greps for ad-hoc deny helpers or raw ledger.EmitPolicyDeny
