@@ -116,5 +116,7 @@ func testAllPayloadStructs() []any {
 		MergeFilterPayload{},
 		ModelMergePayload{},
 		PolicyDenyVMBatchPayload{},
+		// training.go
+		TrainingTunePayload{},
 	}
 }

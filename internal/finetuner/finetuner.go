@@ -48,12 +48,22 @@ type AdapterResult struct {
 	Duration    time.Duration
 }
 
+// LedgerEmitter is the narrow interface finetuner needs from the
+// audit ledger — one method, one payload shape, keyed per training
+// run. Declared locally (not imported from ledger) so the finetuner
+// package's dep chain stays at store+config and tests don't need a
+// real ledger.
+type LedgerEmitter interface {
+	EmitTrainingTune(ctx context.Context, runID string, payload any) error
+}
+
 // Finetuner manages the fine-tuning lifecycle.
 type Finetuner struct {
 	db      *sql.DB
 	backend FinetuneBackend
 	cfg     *config.Config
 	log     *slog.Logger
+	ledger  LedgerEmitter // optional; nil → emission skipped with WARN log
 }
 
 // New creates a new Finetuner. backend may be nil if fine-tuning is disabled.
@@ -64,6 +74,14 @@ func New(db *sql.DB, backend FinetuneBackend, cfg *config.Config, log *slog.Logg
 		cfg:     cfg,
 		log:     log,
 	}
+}
+
+// WithLedger wires the audit-ledger emitter. Returns the same
+// *Finetuner so call sites can fluently chain New(...).WithLedger(em).
+// Mirrors the Manager.WithLedger pattern in internal/vm/.
+func (f *Finetuner) WithLedger(em LedgerEmitter) *Finetuner {
+	f.ledger = em
+	return f
 }
 
 // RunSchedule runs the fine-tuning scheduler. It blocks until ctx is cancelled.
@@ -313,6 +331,15 @@ func (f *Finetuner) runOnce(ctx context.Context) *RunResult {
 		return &RunResult{RunID: runID, Status: "failed", Error: err.Error()}
 	}
 
+	// Emit training.tune "start" row. Emission failure rolls the
+	// finetune_runs insert back and aborts the run — FR-009 requires
+	// the start row to exist before any training work actually runs,
+	// so the ledger is allowed to block a run from starting.
+	if err := f.emitTrainingStart(ctx, runID, totalAnnotated); err != nil {
+		_, _ = f.db.ExecContext(ctx, `DELETE FROM finetune_runs WHERE id = ?`, runID)
+		return &RunResult{RunID: runID, Status: "failed", Error: fmt.Sprintf("ledger start emit: %v", err)}
+	}
+
 	// Select row IDs for the batch.
 	rows, err := f.db.QueryContext(ctx,
 		`SELECT id FROM training_corpus WHERE annotated_at IS NOT NULL AND confidence >= 0.5 AND used_in_finetune = 0 ORDER BY id LIMIT 500`,
@@ -344,6 +371,7 @@ func (f *Finetuner) runOnce(ctx context.Context) *RunResult {
 	if err != nil {
 		errMsg := sanitizeErrorMsg(err.Error())
 		f.failRun(ctx, runID, errMsg)
+		_ = f.emitTrainingEnd(ctx, runID, batch.BaseModelVer, totalAnnotated, "failed", 0, 0, "")
 		return &RunResult{RunID: runID, Status: "failed", Error: errMsg}
 	}
 
@@ -385,6 +413,14 @@ func (f *Finetuner) runOnce(ctx context.Context) *RunResult {
 		 WHERE id = ?`,
 		completedAt, result.AdapterPath, result.SHA256, result.LossFinal, runID,
 	)
+
+	// Emit training.tune "end" row. Failure here does NOT roll the
+	// run back — the adapter is already on disk and the DB state
+	// reflects success. The operator will see a ledger gap on
+	// verification which is preferable to tearing down a valid
+	// adapter because a ledger write failed.
+	_ = f.emitTrainingEnd(ctx, runID, batch.BaseModelVer, len(rowIDs), "complete",
+		int64(result.Duration.Seconds()), result.LossFinal, result.SHA256)
 
 	// Cleanup old adapters.
 	f.cleanupOldAdapters(ctx)
@@ -508,4 +544,66 @@ func sanitizeErrorMsg(msg string) string {
 		msg = msg[:256]
 	}
 	return msg
+}
+
+// emitTrainingStart emits the training.tune "start" row for a fine-
+// tune run. Called synchronously with the finetune_runs INSERT so a
+// failure blocks the run from proceeding — the start marker must
+// exist in the ledger before the training backend touches the model.
+func (f *Finetuner) emitTrainingStart(ctx context.Context, runID string, corpusRowCount int) error {
+	if f.ledger == nil {
+		f.log.Warn("finetuner: ledger emitter not wired; training.tune start skipped", "run_id", runID)
+		return nil
+	}
+	pl := map[string]any{
+		"phase":            "start",
+		"run_id":           runID,
+		"base_model_ver":   "",
+		"corpus_row_count": corpusRowCount,
+		"status":           "running",
+		"duration_seconds": int64(0),
+		"loss_final":       float64(0),
+		"adapter_sha256":   "",
+		"emitted_at":       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	return f.ledger.EmitTrainingTune(ctx, runID, pl)
+}
+
+// emitTrainingEnd emits the training.tune "end" row after a fine-
+// tune run terminates (complete or failed). Emission failure is
+// logged but NOT surfaced as an error — the run's adapter is
+// already on disk and the DB reflects the outcome; a ledger gap is
+// detectable at verify time and preferable to unwinding a good
+// adapter because a ledger write flaked.
+func (f *Finetuner) emitTrainingEnd(
+	ctx context.Context,
+	runID string,
+	baseModelVer string,
+	corpusRowCount int,
+	status string,
+	durationSec int64,
+	lossFinal float64,
+	adapterSHA256 string,
+) error {
+	if f.ledger == nil {
+		f.log.Warn("finetuner: ledger emitter not wired; training.tune end skipped", "run_id", runID)
+		return nil
+	}
+	pl := map[string]any{
+		"phase":            "end",
+		"run_id":           runID,
+		"base_model_ver":   baseModelVer,
+		"corpus_row_count": corpusRowCount,
+		"status":           status,
+		"duration_seconds": durationSec,
+		"loss_final":       lossFinal,
+		"adapter_sha256":   adapterSHA256,
+		"emitted_at":       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := f.ledger.EmitTrainingTune(ctx, runID, pl); err != nil {
+		f.log.Warn("finetuner: training.tune end emit failed (ledger gap will surface at verify)",
+			"run_id", runID, "err", err)
+		return err
+	}
+	return nil
 }
