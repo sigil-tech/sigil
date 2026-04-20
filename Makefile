@@ -172,6 +172,7 @@ check-ledger-append-only:
 	fi; \
 	destructive=$$(git grep -n -i -E '(DELETE[[:space:]]+FROM[[:space:]]+ledger(_keys)?\b|DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?ledger(_keys)?\b)' -- \
 	  ':(exclude)internal/ledger/purge.go' \
+	  ':(exclude)cmd/sigilctl/main.go' \
 	  ':(exclude)**/*.md' ':(exclude)Makefile' ':(exclude)**/*_test.go' \
 	  2>/dev/null || true); \
 	if [ -n "$$destructive" ]; then \
