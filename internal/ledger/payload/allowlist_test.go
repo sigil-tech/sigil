@@ -118,5 +118,7 @@ func testAllPayloadStructs() []any {
 		PolicyDenyVMBatchPayload{},
 		// training.go
 		TrainingTunePayload{},
+		// policy.go
+		PolicyDenyPayload{},
 	}
 }

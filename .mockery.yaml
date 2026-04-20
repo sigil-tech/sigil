@@ -39,3 +39,11 @@ packages:
       LedgerEmitter:
         config:
           dir: "internal/vm/mocks"
+  github.com/sigil-tech/sigil/internal/policy:
+    interfaces:
+      Denier:
+        config:
+          dir: "internal/policy/mocks"
+      LedgerEmitter:
+        config:
+          dir: "internal/policy/mocks"

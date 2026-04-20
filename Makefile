@@ -9,7 +9,7 @@ PLUGINS := $(wildcard ./plugins/sigil-plugin-*/)
 
 .PHONY: all fmt fmt-check vet lint staticcheck test test-race check build build-app install run \
         status generate coverage clean sync-assets hooks fetch-sigil-os-image fetch-vz-binary \
-        check-ledger-append-only help
+        check-ledger-append-only check-policy-centralisation check-ledger-privacy help
 
 ## all: default target — build everything.
 all: build
@@ -180,6 +180,47 @@ check-ledger-append-only:
 	fi; \
 	if [ $$fail -ne 0 ]; then exit 1; fi; \
 	echo "check-ledger-append-only: OK (ledger / ledger_keys append-only outside keyregistry + purge helpers)"
+
+## check-policy-centralisation: enforce spec 029 FR-006. Every deny decision MUST flow
+## through internal/policy.Denier — greps for ad-hoc deny helpers or raw ledger.EmitPolicyDeny
+## calls anywhere except the sanctioned sites (internal/policy/ itself, cmd/sigild's
+## emitter adapter wiring). Flags any new call-site that bypasses Denier.
+check-policy-centralisation:
+	@set -e; \
+	fail=0; \
+	direct_emit=$$(git grep -n -i -E 'EmitPolicyDeny\b' -- \
+	  ':(exclude)internal/policy/*.go' \
+	  ':(exclude)internal/policy/mocks/*.go' \
+	  ':(exclude)internal/ledger/payload/*.go' \
+	  ':(exclude)cmd/sigild/*.go' \
+	  ':(exclude)**/*.md' ':(exclude)Makefile' ':(exclude)**/*_test.go' \
+	  2>/dev/null || true); \
+	if [ -n "$$direct_emit" ]; then \
+	  echo "check-policy-centralisation: FAIL — EmitPolicyDeny called outside the policy package (route through policy.Deny):"; \
+	  echo "$$direct_emit"; fail=1; \
+	fi; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "check-policy-centralisation: OK (every EmitPolicyDeny lives in internal/policy or the cmd/sigild wiring)"
+
+## check-ledger-privacy: enforce FR-032 / FR-033. Greps for `any` / `map[string]interface{}`
+## field types in internal/ledger/payload/*.go — every payload field MUST be a typed
+## struct field. Also runs the payload allowlist_test.go drift gate (ensures the denylist
+## reflect-based check passes).
+check-ledger-privacy:
+	@set -e; \
+	fail=0; \
+	untyped=$$(git grep -n -E '^\s*\w+\s+(any|map\[string\]interface\{\})\b' -- \
+	  'internal/ledger/payload/*.go' ':(exclude)**/*_test.go' \
+	  2>/dev/null || true); \
+	if [ -n "$$untyped" ]; then \
+	  echo "check-ledger-privacy: FAIL — untyped field in a payload struct (FR-032 forbids any / map[string]interface{}):"; \
+	  echo "$$untyped"; fail=1; \
+	fi; \
+	if ! go test -count=1 ./internal/ledger/payload/ >/dev/null 2>&1; then \
+	  echo "check-ledger-privacy: FAIL — payload allowlist test suite did not pass"; fail=1; \
+	fi; \
+	if [ $$fail -ne 0 ]; then exit 1; fi; \
+	echo "check-ledger-privacy: OK (all payload fields typed; allowlist tests green)"
 
 ## clean: remove build artifacts.
 clean:
