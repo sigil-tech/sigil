@@ -8,7 +8,8 @@ CMDS    := ./cmd/sigild/ ./cmd/sigilctl/
 PLUGINS := $(wildcard ./plugins/sigil-plugin-*/)
 
 .PHONY: all fmt fmt-check vet lint staticcheck test test-race check build build-app install run \
-        status generate coverage clean sync-assets hooks fetch-sigil-os-image fetch-vz-binary help
+        status generate coverage clean sync-assets hooks fetch-sigil-os-image fetch-vz-binary \
+        check-ledger-append-only help
 
 ## all: default target — build everything.
 all: build
@@ -139,6 +140,27 @@ fetch-vz-binary:
 	chmod +x $(BIN)/sigild-vz
 	cd $(BIN) && sha256sum -c sigild-vz.checksum
 	@echo "sigild-vz verified and saved to $(BIN)/sigild-vz"
+
+## check-ledger-append-only: grep for any UPDATE / DELETE / DROP against `ledger` or `ledger_keys`
+## tables anywhere outside `internal/ledger/purge.go`. Enforces spec 029 FR-002 / FR-013b — the
+## ledger is append-only by design, violations are a build-blocking defect.
+## Allowlist: internal/ledger/purge.go (the single authorised purge helper), *.md,
+## *_test.go (tests are allowed to poke raw SQL for tamper fixtures).
+check-ledger-append-only:
+	@set -e; \
+	pattern='(UPDATE[[:space:]]+ledger(_keys)?\b|DELETE[[:space:]]+FROM[[:space:]]+ledger(_keys)?\b|DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?ledger(_keys)?\b)'; \
+	matches=$$(git grep -n -i -E "$$pattern" -- \
+	  ':(exclude)internal/ledger/purge.go' \
+	  ':(exclude)**/*.md' \
+	  ':(exclude)Makefile' \
+	  ':(exclude)**/*_test.go' \
+	  2>/dev/null || true); \
+	if [ -n "$$matches" ]; then \
+	  echo "check-ledger-append-only: FAIL — disallowed ledger mutation outside internal/ledger/purge.go:"; \
+	  echo "$$matches"; \
+	  exit 1; \
+	fi; \
+	echo "check-ledger-append-only: OK (ledger / ledger_keys tables only touched via Append + purge helper)"
 
 ## clean: remove build artifacts.
 clean:
