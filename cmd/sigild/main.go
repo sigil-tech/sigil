@@ -375,6 +375,16 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	var currentProfile atomic.Value
 	currentProfile.Store("terminal") // default profile
 
+	// --- Audit ledger (spec 029) --------------------------------------------
+	// Migrate the ledger + ledger_keys tables and wire the four
+	// collaborators. A failure here aborts daemon startup because every
+	// privileged action emits through the ledger.
+	ledgerBundleInst, err := setupLedger(ctx, db.DB(), log)
+	if err != nil {
+		log.Error("sigild: ledger setup", "err", err)
+		return fmt.Errorf("sigild: ledger setup: %w", err)
+	}
+
 	// --- Socket server ------------------------------------------------------
 	srv := socket.New(cfg.socketPath, log)
 	registerHandlers(srv, db, engine, ntf, anlz, terminalSrc, log, &currentRSSMB, nextDigest, &currentProfile, cfg, startTime, stop)
@@ -386,6 +396,7 @@ func run(cfg daemonConfig, log *slog.Logger) error {
 	registerCloudHandlers(srv, cfg)
 	registerNotificationHandlers(srv, cfg)
 	registerHealthHandler(srv, cfg)
+	registerLedgerWiring(srv, ledgerBundleInst)
 
 	// test-notify — dev-only: push a fake suggestion to all subscribers.
 	srv.Handle("test-notify", func(_ context.Context, _ socket.Request) socket.Response {
@@ -2885,7 +2896,10 @@ func registerFinetunerHandlers(srv *socket.Server, ft *finetuner.Finetuner) {
 //	3 — VM Sandbox handlers real-wired + vm-events topic + stat fields in
 //	    VMList response (spec 028 Phase 5a–5c). Partial-feature daemons at
 //	    v2 (observer only) must not serve VM Sandbox requests to Kenaz.
-const ProtocolVersion = 3
+//	4 — spec 029 audit ledger handlers (ledger-list / ledger-get /
+//	    ledger-verify / ledger-key). Additive-only — pre-4 clients keep
+//	    working because none of the existing method shapes change.
+const ProtocolVersion = 4
 
 // DaemonVersion is the daemon's semantic version.
 const DaemonVersion = "0.5.0"
